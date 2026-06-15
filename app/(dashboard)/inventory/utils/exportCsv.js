@@ -1,60 +1,16 @@
-export function exportInventoryCSV(items, date) {
-  if (!items || !items.length) return;
-
-  const headers = [
-    "Name",
-    "Beginning",
-    "Incoming",
-    "Outgoing",
-    "Current",
-    "Actual",
-    "Loss",
-  ];
-
-  function escape(value) {
-    if (value === null || value === undefined) return "";
-    const str = String(value);
-
-    // escape quotes
-    if (str.includes('"')) {
-      return `"${str.replace(/"/g, '""')}"`;
-    }
-
-    // wrap if commas exist
-    if (str.includes(",")) {
-      return `"${str}"`;
-    }
-
-    return str;
-  }
-
+export function exportInventoryCSV(items = [], date = "") {
+  const headers = ["Name","Beginning","In","Out","Current","Actual","Loss"];
   const rows = items.map((i) => [
-    escape(i.name),
-    i.beg_bal,
-    i.incoming_bal,
-    i.outgoing_bal,
-    i.current_bal,
-    i.actual_bal,
-    i.loss,
+    `"${(i.name ?? "").replace(/"/g, '""')}"`,
+    i.beg_bal ?? 0, i.incoming_bal ?? 0, i.outgoing_bal ?? 0,
+    i.current_bal ?? 0, i.actual_bal ?? 0, i.loss ?? 0,
   ]);
-
-  const csv = [
-    headers.join(","),
-    ...rows.map((r) => r.join(",")),
-  ].join("\n");
-
+  const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
-
   const a = document.createElement("a");
   a.href = url;
-
-  const safeDate = date || "today";
-  a.download = `inventory_${safeDate}.csv`;
-
-  document.body.appendChild(a);
+  a.download = `inventory_${date || new Date().toISOString().slice(0, 10)}.csv`;
   a.click();
-  document.body.removeChild(a);
-
   URL.revokeObjectURL(url);
 }
