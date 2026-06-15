@@ -13,6 +13,8 @@ import {
   ResponsiveContainer,
 } from "recharts";
 
+const LOW_STOCK_THRESHOLD = 100;
+
 export default function InventoryPage() {
   const [tab, setTab] = useState("finished");
   const [items, setItems] = useState([]);
@@ -96,12 +98,29 @@ export default function InventoryPage() {
     };
   }, [items]);
 
+  // 🚨 LOW STOCK / OUT OF STOCK
+  const outOfStock = useMemo(
+    () => items.filter(i => Number(i.current_bal) === 0),
+    [items]
+  );
+
+  const lowStock = useMemo(
+    () =>
+      items.filter(
+        i =>
+          Number(i.current_bal) > 0 &&
+          Number(i.current_bal) < LOW_STOCK_THRESHOLD
+      ),
+    [items]
+  );
+
+  const hasAlerts = outOfStock.length > 0 || lowStock.length > 0;
+
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
 
       {/* HEADER */}
       <div className="flex justify-between items-center mb-6">
-
         <div>
           <h1 className="text-2xl font-bold">
             Inventory Summary Dashboard
@@ -117,12 +136,10 @@ export default function InventoryPage() {
         >
           Print
         </button>
-
       </div>
 
       {/* CONTROLS */}
       <div className="flex gap-2 mb-6">
-
         <button
           onClick={() => setTab("finished")}
           className={`px-4 py-2 border rounded ${
@@ -146,12 +163,10 @@ export default function InventoryPage() {
           date={date}
           onSelectDate={setDate}
         />
-
       </div>
 
       {/* KPI CARDS */}
       <div className="grid grid-cols-4 gap-4 mb-6">
-
         <div className="bg-blue-500 text-white p-4 rounded-xl">
           Total Items
           <div className="text-2xl font-bold">{summary.totalItems}</div>
@@ -171,8 +186,68 @@ export default function InventoryPage() {
           Loss
           <div className="text-2xl font-bold">{summary.loss}</div>
         </div>
-
       </div>
+
+      {/* 🚨 LOW STOCK / OUT OF STOCK ALERTS */}
+      {hasAlerts && (
+        <div className="mb-6 grid grid-cols-2 gap-4">
+
+          {/* OUT OF STOCK */}
+          {outOfStock.length > 0 && (
+            <div className="bg-white border border-red-300 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="inline-block w-2.5 h-2.5 rounded-full bg-red-500" />
+                <h2 className="font-bold text-red-600">
+                  Out of Stock
+                  <span className="ml-2 text-sm font-normal text-red-400">
+                    ({outOfStock.length} item{outOfStock.length !== 1 ? "s" : ""})
+                  </span>
+                </h2>
+              </div>
+              <ul className="space-y-1 max-h-48 overflow-y-auto">
+                {outOfStock.map(i => (
+                  <li
+                    key={i.id}
+                    className="flex justify-between items-center text-sm px-3 py-2 bg-red-50 rounded-lg"
+                  >
+                    <span className="text-gray-700 font-medium">{i.name}</span>
+                    <span className="text-red-600 font-bold">0 units</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* LOW STOCK */}
+          {lowStock.length > 0 && (
+            <div className="bg-white border border-yellow-300 rounded-xl p-4">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="inline-block w-2.5 h-2.5 rounded-full bg-yellow-400" />
+                <h2 className="font-bold text-yellow-600">
+                  Low Stock
+                  <span className="ml-2 text-sm font-normal text-yellow-400">
+                    ({lowStock.length} item{lowStock.length !== 1 ? "s" : ""} below {LOW_STOCK_THRESHOLD} units)
+                  </span>
+                </h2>
+              </div>
+              <ul className="space-y-1 max-h-48 overflow-y-auto">
+                {lowStock.map(i => (
+                  <li
+                    key={i.id}
+                    className="flex justify-between items-center text-sm px-3 py-2 bg-yellow-50 rounded-lg"
+                  >
+                    <span className="text-gray-700 font-medium">{i.name}</span>
+                    <span className="text-yellow-600 font-bold">
+                      {i.current_bal} units
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+        </div>
+      )}
 
       {/* CHARTS */}
       <div className="grid grid-cols-2 gap-4 mb-6">
@@ -180,7 +255,6 @@ export default function InventoryPage() {
         {/* STOCK CHART */}
         <div className="bg-white border p-4 rounded-xl">
           <h2 className="font-bold mb-2">Stock Levels</h2>
-
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={items}>
               <XAxis dataKey="name" />
@@ -194,7 +268,6 @@ export default function InventoryPage() {
         {/* LOSS CHART */}
         <div className="bg-white border p-4 rounded-xl">
           <h2 className="font-bold mb-2">Loss Overview</h2>
-
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={items}>
               <XAxis dataKey="name" />
@@ -203,16 +276,13 @@ export default function InventoryPage() {
               <Bar dataKey="loss" fill="#ef4444" />
             </BarChart>
           </ResponsiveContainer>
-
         </div>
 
       </div>
 
       {/* TABLE SUMMARY */}
       <div className="bg-white border rounded-xl overflow-hidden">
-
         <table className="w-full text-sm">
-
           <thead className="bg-gray-100">
             <tr>
               <th className="p-3 text-left">Name</th>
@@ -226,23 +296,43 @@ export default function InventoryPage() {
           </thead>
 
           <tbody>
-            {items.map(i => (
-              <tr key={i.id} className="border-t">
+            {items.map(i => {
+              const isOut = Number(i.current_bal) === 0;
+              const isLow =
+                Number(i.current_bal) > 0 &&
+                Number(i.current_bal) < LOW_STOCK_THRESHOLD;
 
-                <td className="p-3">{i.name}</td>
-                <td>{i.beg_bal}</td>
-                <td className="text-green-600">{i.incoming_bal}</td>
-                <td className="text-red-600">{i.outgoing_bal}</td>
-                <td>{i.current_bal}</td>
-                <td>{i.actual_bal}</td>
-                <td className="text-red-500">{i.loss}</td>
-
-              </tr>
-            ))}
+              return (
+                <tr
+                  key={i.id}
+                  className={`border-t ${
+                    isOut
+                      ? "bg-red-50"
+                      : isLow
+                      ? "bg-yellow-50"
+                      : ""
+                  }`}
+                >
+                  <td className="p-3 flex items-center gap-2">
+                    {isOut && (
+                      <span className="inline-block w-2 h-2 rounded-full bg-red-500" />
+                    )}
+                    {isLow && (
+                      <span className="inline-block w-2 h-2 rounded-full bg-yellow-400" />
+                    )}
+                    {i.name}
+                  </td>
+                  <td className="text-center">{i.beg_bal}</td>
+                  <td className="text-center text-green-600">{i.incoming_bal}</td>
+                  <td className="text-center text-red-600">{i.outgoing_bal}</td>
+                  <td className="text-center">{i.current_bal}</td>
+                  <td className="text-center">{i.actual_bal}</td>
+                  <td className="text-center text-red-500">{i.loss}</td>
+                </tr>
+              );
+            })}
           </tbody>
-
         </table>
-
       </div>
 
     </div>

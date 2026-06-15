@@ -6,6 +6,7 @@ import InventoryHeader from "./components/InventoryHeader";
 import InventoryTable from "./components/InventoryTable";
 import ManipulatePanel from "./components/ManipulationPanel";
 import InventoryCalendar from "./components/InventoryCalendar";
+import InventorySummary from "./components/InventorySummary";
 
 export default function InventoryPage() {
   const [tab, setTab] = useState("finished");
@@ -93,12 +94,24 @@ export default function InventoryPage() {
     return true;
   }
 
+  // After a successful undo, the change only affects the LIVE tables.
+  // If the user is currently viewing a historical date, jump back to
+  // the live view so the restored values are actually visible.
+  function afterUndo() {
+    if (date !== "") {
+      setDate("");
+    } else {
+      loadData();
+      checkUndoAvailability();
+    }
+  }
+
   async function undoItemChange() {
     if (!confirm("Undo the last item change?")) return;
     setUndoing("item");
     const ok = await restoreSnapshot("item_change");
     setUndoing(null);
-    if (ok) { loadData(); checkUndoAvailability(); }
+    if (ok) afterUndo();
   }
 
   async function undoSession() {
@@ -106,7 +119,7 @@ export default function InventoryPage() {
     setUndoing("session");
     const ok = await restoreSnapshot("session");
     setUndoing(null);
-    if (ok) { loadData(); checkUndoAvailability(); }
+    if (ok) afterUndo();
   }
 
   async function undoCloseDay() {
@@ -114,7 +127,7 @@ export default function InventoryPage() {
     setUndoing("close_day");
     const ok = await restoreSnapshot("close_day");
     setUndoing(null);
-    if (ok) { loadData(); checkUndoAvailability(); }
+    if (ok) afterUndo();
   }
 
   async function closeDay() {
@@ -131,7 +144,7 @@ export default function InventoryPage() {
 
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
-      <InventoryHeader onPrint={() => window.print()} items={items} date={date} />
+      <InventoryHeader items={items} date={date} />
 
       <div className="flex gap-2 mb-6 flex-wrap items-center">
         <button onClick={() => setTab("finished")} className={`px-4 py-2 border rounded ${tab === "finished" ? "bg-blue-600 text-white" : "bg-white"}`}>Finished</button>
@@ -139,23 +152,25 @@ export default function InventoryPage() {
         <InventoryCalendar tab={tab} date={date} onSelectDate={setDate} />
 
         {date === "" && (
-          <>
-            <button onClick={closeDay} disabled={closing} className="border px-4 py-2 rounded bg-amber-500 text-white disabled:opacity-50">
-              {closing ? "Closing..." : "Close day"}
-            </button>
-            <div className="w-px h-8 bg-gray-200 mx-1" />
-            <button onClick={undoItemChange} disabled={!canUndoItem || undoing === "item"} title="Revert the last single item edit" className="border px-4 py-2 rounded bg-white text-gray-700 disabled:opacity-40 hover:bg-gray-100">
-              ↩ {undoing === "item" ? "Undoing..." : "Undo item"}
-            </button>
-            <button onClick={undoSession} disabled={!canUndoSession || undoing === "session"} title="Revert all changes this session" className="border px-4 py-2 rounded bg-white text-gray-700 disabled:opacity-40 hover:bg-gray-100">
-              ↩↩ {undoing === "session" ? "Undoing..." : "Undo session"}
-            </button>
-            <button onClick={undoCloseDay} disabled={!canUndoCloseDay || undoing === "close_day"} title="Revert the last Close Day" className="border px-4 py-2 rounded bg-red-100 text-red-700 border-red-300 disabled:opacity-40 hover:bg-red-200">
-              ↩ {undoing === "close_day" ? "Undoing..." : "Undo close day"}
-            </button>
-          </>
+          <button onClick={closeDay} disabled={closing} className="border px-4 py-2 rounded bg-amber-500 text-white disabled:opacity-50">
+            {closing ? "Closing..." : "Close day"}
+          </button>
         )}
+
+        <div className="w-px h-8 bg-gray-200 mx-1" />
+
+        <button onClick={undoItemChange} disabled={!canUndoItem || undoing === "item"} title="Revert the last single item edit (switches to live view)" className="border px-4 py-2 rounded bg-white text-gray-700 disabled:opacity-40 hover:bg-gray-100">
+          ↩ {undoing === "item" ? "Undoing..." : "Undo item"}
+        </button>
+        <button onClick={undoSession} disabled={!canUndoSession || undoing === "session"} title="Revert all changes this session (switches to live view)" className="border px-4 py-2 rounded bg-white text-gray-700 disabled:opacity-40 hover:bg-gray-100">
+          ↩↩ {undoing === "session" ? "Undoing..." : "Undo session"}
+        </button>
+        <button onClick={undoCloseDay} disabled={!canUndoCloseDay || undoing === "close_day"} title="Revert the last Close Day (switches to live view)" className="border px-4 py-2 rounded bg-red-100 text-red-700 border-red-300 disabled:opacity-40 hover:bg-red-200">
+          ↩ {undoing === "close_day" ? "Undoing..." : "Undo close day"}
+        </button>
       </div>
+
+      <InventorySummary tab={tab} />
 
       <InventoryTable items={items} loading={loading} onSelect={setActiveItem} />
 

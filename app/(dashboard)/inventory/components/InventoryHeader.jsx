@@ -2,7 +2,7 @@
 
 import { exportInventoryCSV } from "../utils/exportCsv";
 
-export default function InventoryHeader({ onPrint, items = [], date = "" }) {
+export default function InventoryHeader({ items = [], date = "" }) {
   function pad(str, len) {
     str = String(str ?? "");
     if (str.length >= len) return str.slice(0, len - 1) + " ";
@@ -13,6 +13,7 @@ export default function InventoryHeader({ onPrint, items = [], date = "" }) {
     if (str.length >= len) return str.slice(0, len);
     return " ".repeat(len - str.length) + str;
   }
+
   function handlePrint() {
     const cols = [
       { key: "name", label: "ITEM", width: 26 },
@@ -25,6 +26,7 @@ export default function InventoryHeader({ onPrint, items = [], date = "" }) {
     ];
     const lineWidth = cols.reduce((sum, c) => sum + c.width, 0);
     const divider = "-".repeat(lineWidth);
+
     let out = "INVENTORY REPORT\n";
     out += `Date: ${date || new Date().toISOString().slice(0, 10)}  (${date ? "Historical" : "Live"})\n`;
     out += divider + "\n";
@@ -35,12 +37,27 @@ export default function InventoryHeader({ onPrint, items = [], date = "" }) {
     });
     out += divider + "\n";
     out += `Total items: ${items.length}\n`;
+
     const escaped = out.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
     const printWindow = window.open("", "_blank", "width=800,height=600");
-    if (!printWindow) return;
-    printWindow.document.write(`<html><head><title>Inventory Report</title><style>@page{size:auto;margin:5mm}body{font-family:"Courier New",Courier,monospace;font-size:10pt;line-height:1.2;white-space:pre;margin:0;color:#000;background:#fff}</style></head><body>${escaped}</body></html>`);
+    if (!printWindow) {
+      alert("Please allow popups for this site to print the report.");
+      return;
+    }
+
+    printWindow.document.write(
+      `<html><head><title>Inventory Report</title><style>@page{size:auto;margin:5mm}body{font-family:"Courier New",Courier,monospace;font-size:10pt;line-height:1.2;white-space:pre;margin:0;color:#000;background:#fff}</style></head><body>${escaped}</body></html>`
+    );
     printWindow.document.close();
-    printWindow.onload = () => { printWindow.focus(); printWindow.print(); printWindow.close(); };
+
+    // Close only after the print dialog has finished, not immediately.
+    printWindow.onafterprint = () => {
+      printWindow.close();
+    };
+
+    printWindow.focus();
+    printWindow.print();
   }
 
   return (

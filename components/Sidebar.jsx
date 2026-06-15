@@ -9,10 +9,13 @@ export default function Sidebar() {
 
   const links = [
     { label: "Dashboard", href: "/dashboard", symbol: "📊" },
+    { label: "Employees", href: "/employees", symbol: "👨🏻‍💼" },
     { label: "Suppliers", href: "/suppliers", symbol: "🤝" },
     { label: "Categories", href: "/categories", symbol: "🗂️" },
     { label: "Products", href: "/products", symbol: "📦" },
     { label: "Inventory", href: "/inventory", symbol: "📋" },
+    { label: "Orders", href: "/orders", symbol: "🛒" },
+    { label: "Transactions", href: "/transactions", symbol: "🔄" },
   ];
 
   return (
