@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
+// ─── helpers ──────────────────────────────────────────────────────────────────
 
 function Avatar({ name }) {
   const initials = name
@@ -85,6 +85,7 @@ function ModalActions({ onCancel, onSave, saving }) {
 // ─── monitoring table ─────────────────────────────────────────────────────────
 
 function MonitoringTable() {
+  const [open, setOpen] = useState(true);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -147,77 +148,88 @@ function MonitoringTable() {
   return (
     <div className="bg-white border rounded-lg overflow-hidden">
 
-      {/* HEADER — matches InventoryTable header pattern */}
-      <div className="flex items-center justify-between p-4 border-b bg-gray-50">
-        <div>
-          <h2 className="font-bold text-gray-900">Monitoring Employees</h2>
-          <p className="text-xs text-gray-400 mt-0.5">
-            {rows.length} employee{rows.length !== 1 ? "s" : ""}
-          </p>
+      <div
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between p-4 border-b bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-gray-400 text-xs transition-transform duration-200">
+            {open ? "▲" : "▼"}
+          </span>
+          <div>
+            <h2 className="font-bold text-gray-900">Monitoring Employees</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {rows.length} employee{rows.length !== 1 ? "s" : ""}
+            </p>
+          </div>
         </div>
-        <button
-          onClick={openAdd}
-          className="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700"
-        >
-          + Add employee
-        </button>
+        <div onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={openAdd}
+            className="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700"
+          >
+            + Add employee
+          </button>
+        </div>
       </div>
 
-      {/* SEARCH — matches InventoryTable search bar */}
-      <div className="p-3 border-b bg-gray-50">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name or role..."
-          className="border px-3 py-2 rounded w-full max-w-xs text-sm"
-        />
-      </div>
+      {open && (
+        <>
+          <div className="p-3 border-b bg-gray-50">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name or role..."
+              className="border px-3 py-2 rounded w-full max-w-xs text-sm"
+            />
+          </div>
 
-      {/* TABLE — matches InventoryTable table style */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[600px]">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-3 text-left">Employee</th>
-              <th className="p-3 text-left">Role</th>
-              <th className="p-3 text-left">Added</th>
-              <th className="p-3 text-left">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={4} className="p-6 text-gray-500">Loading...</td></tr>
-            ) : filtered.length === 0 ? (
-              <tr><td colSpan={4} className="p-6 text-gray-500">No employees found.</td></tr>
-            ) : (
-              filtered.map((row) => (
-                <tr key={row.id} className="border-t hover:bg-gray-50">
-                  <td className="p-3">
-                    <div className="flex items-center gap-3">
-                      <Avatar name={row.name} />
-                      <span className="font-medium">{row.name}</span>
-                    </div>
-                  </td>
-                  <td className="p-3">
-                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-                      {row.role}
-                    </span>
-                  </td>
-                  <td className="p-3 text-gray-400 text-xs">
-                    {new Date(row.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="p-3">
-                    <div className="flex gap-2">
-                      <button onClick={() => openEdit(row)} className="bg-blue-600 text-white px-3 py-1 rounded text-xs">Edit</button>
-                      <button onClick={() => setDeleteRow(row)} className="bg-red-50 text-red-600 border border-red-200 px-3 py-1 rounded text-xs">Delete</button>
-                    </div>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[600px]">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-3 text-left">Employee</th>
+                  <th className="p-3 text-left">Role</th>
+                  <th className="p-3 text-left">Added</th>
+                  <th className="p-3 text-left">Action</th>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={4} className="p-6 text-gray-500">Loading…</td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={4} className="p-6 text-gray-500">No employees found.</td></tr>
+                ) : (
+                  filtered.map((row) => (
+                    <tr key={row.id} className="border-t hover:bg-gray-50">
+                      <td className="p-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={row.name} />
+                          <span className="font-medium">{row.name}</span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
+                          {row.role}
+                        </span>
+                      </td>
+                      <td className="p-3 text-gray-400 text-xs">
+                        {new Date(row.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex gap-2">
+                          <button onClick={() => openEdit(row)} className="bg-blue-600 text-white px-3 py-1 rounded text-xs">Edit</button>
+                          <button onClick={() => setDeleteRow(row)} className="bg-red-50 text-red-600 border border-red-200 px-3 py-1 rounded text-xs">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       {showAdd && (
         <Modal title="Add monitoring employee" onClose={() => setShowAdd(false)}>
@@ -245,6 +257,7 @@ function MonitoringTable() {
 // ─── representative table ─────────────────────────────────────────────────────
 
 function RepresentativeTable() {
+  const [open, setOpen] = useState(true);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -307,81 +320,92 @@ function RepresentativeTable() {
   return (
     <div className="bg-white border rounded-lg overflow-hidden">
 
-      {/* HEADER */}
-      <div className="flex items-center justify-between p-4 border-b bg-gray-50">
-        <div>
-          <h2 className="font-bold text-gray-900">Representative Employees</h2>
-          <p className="text-xs text-gray-400 mt-0.5">
-            {rows.length} employee{rows.length !== 1 ? "s" : ""}
-          </p>
+      <div
+        onClick={() => setOpen((p) => !p)}
+        className="w-full flex items-center justify-between p-4 border-b bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
+      >
+        <div className="flex items-center gap-3">
+          <span className="text-gray-400 text-xs">
+            {open ? "▲" : "▼"}
+          </span>
+          <div>
+            <h2 className="font-bold text-gray-900">Representative Employees</h2>
+            <p className="text-xs text-gray-400 mt-0.5">
+              {rows.length} employee{rows.length !== 1 ? "s" : ""}
+            </p>
+          </div>
         </div>
-        <button
-          onClick={openAdd}
-          className="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700"
-        >
-          + Add employee
-        </button>
+        <div onClick={(e) => e.stopPropagation()}>
+          <button
+            onClick={openAdd}
+            className="bg-blue-600 text-white text-sm px-4 py-2 rounded hover:bg-blue-700"
+          >
+            + Add employee
+          </button>
+        </div>
       </div>
 
-      {/* SEARCH */}
-      <div className="p-3 border-b bg-gray-50">
-        <input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search by name or products..."
-          className="border px-3 py-2 rounded w-full max-w-xs text-sm"
-        />
-      </div>
+      {open && (
+        <>
+          <div className="p-3 border-b bg-gray-50">
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search by name or products..."
+              className="border px-3 py-2 rounded w-full max-w-xs text-sm"
+            />
+          </div>
 
-      {/* TABLE */}
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm min-w-[600px]">
-          <thead className="bg-gray-100">
-            <tr>
-              <th className="p-3 text-left">Employee</th>
-              <th className="p-3 text-left">Products</th>
-              <th className="p-3 text-left">Added</th>
-              <th className="p-3 text-left">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading ? (
-              <tr><td colSpan={4} className="p-6 text-gray-500">Loading...</td></tr>
-            ) : filtered.length === 0 ? (
-              <tr><td colSpan={4} className="p-6 text-gray-500">No employees found.</td></tr>
-            ) : (
-              filtered.map((row) => (
-                <tr key={row.id} className="border-t hover:bg-gray-50">
-                  <td className="p-3">
-                    <div className="flex items-center gap-3">
-                      <Avatar name={row.name} />
-                      <span className="font-medium">{row.name}</span>
-                    </div>
-                  </td>
-                  <td className="p-3">
-                    <div className="flex flex-wrap gap-1">
-                      {row.products.split(",").map((p) => (
-                        <span key={p} className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700">
-                          {p.trim()}
-                        </span>
-                      ))}
-                    </div>
-                  </td>
-                  <td className="p-3 text-gray-400 text-xs">
-                    {new Date(row.created_at).toLocaleDateString()}
-                  </td>
-                  <td className="p-3">
-                    <div className="flex gap-2">
-                      <button onClick={() => openEdit(row)} className="bg-blue-600 text-white px-3 py-1 rounded text-xs">Edit</button>
-                      <button onClick={() => setDeleteRow(row)} className="bg-red-50 text-red-600 border border-red-200 px-3 py-1 rounded text-xs">Delete</button>
-                    </div>
-                  </td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[600px]">
+              <thead className="bg-gray-100">
+                <tr>
+                  <th className="p-3 text-left">Employee</th>
+                  <th className="p-3 text-left">Products</th>
+                  <th className="p-3 text-left">Added</th>
+                  <th className="p-3 text-left">Action</th>
                 </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+              </thead>
+              <tbody>
+                {loading ? (
+                  <tr><td colSpan={4} className="p-6 text-gray-500">Loading…</td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={4} className="p-6 text-gray-500">No employees found.</td></tr>
+                ) : (
+                  filtered.map((row) => (
+                    <tr key={row.id} className="border-t hover:bg-gray-50">
+                      <td className="p-3">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={row.name} />
+                          <span className="font-medium">{row.name}</span>
+                        </div>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex flex-wrap gap-1">
+                          {row.products.split(",").map((p) => (
+                            <span key={p} className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700">
+                              {p.trim()}
+                            </span>
+                          ))}
+                        </div>
+                      </td>
+                      <td className="p-3 text-gray-400 text-xs">
+                        {new Date(row.created_at).toLocaleDateString()}
+                      </td>
+                      <td className="p-3">
+                        <div className="flex gap-2">
+                          <button onClick={() => openEdit(row)} className="bg-blue-600 text-white px-3 py-1 rounded text-xs">Edit</button>
+                          <button onClick={() => setDeleteRow(row)} className="bg-red-50 text-red-600 border border-red-200 px-3 py-1 rounded text-xs">Delete</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
 
       {showAdd && (
         <Modal title="Add representative employee" onClose={() => setShowAdd(false)}>
@@ -411,12 +435,9 @@ function RepresentativeTable() {
 export default function EmployeePage() {
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
-
-      <div className="mb-6 flex justify-between items-center">
-        <div>
-          <h1 className="text-2xl font-bold">Employees</h1>
-          <p className="text-sm text-gray-500">Manage monitoring and representative staff</p>
-        </div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold">Employees</h1>
+        <p className="text-sm text-gray-500">Manage monitoring and representative staff</p>
       </div>
 
       <div className="space-y-6">

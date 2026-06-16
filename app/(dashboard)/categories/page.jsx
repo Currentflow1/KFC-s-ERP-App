@@ -7,15 +7,14 @@ import Link from "next/link";
 export default function CategoriesPage() {
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
   async function fetchCategories() {
     setLoading(true);
-
     const { data } = await supabase
       .from("categories")
       .select("*")
       .order("created_at", { ascending: false });
-
     setCategories(data || []);
     setLoading(false);
   }
@@ -25,12 +24,16 @@ export default function CategoriesPage() {
   }, []);
 
   async function deleteCategory(id) {
-    const ok = confirm("Delete this category?");
-    if (!ok) return;
-
+    if (!confirm("Delete this category?")) return;
     await supabase.from("categories").delete().eq("id", id);
     fetchCategories();
   }
+
+  const filtered = categories.filter(
+    (c) =>
+      c.name.toLowerCase().includes(search.toLowerCase()) ||
+      (c.description || "").toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
     <div className="p-8 bg-gray-50 min-h-screen">
@@ -38,9 +41,7 @@ export default function CategoriesPage() {
       <div className="flex justify-between items-center mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Categories</h1>
-          <p className="text-sm text-gray-500">
-            Manage product categories
-          </p>
+          <p className="text-sm text-gray-500">Manage product categories</p>
         </div>
 
         <Link
@@ -49,6 +50,17 @@ export default function CategoriesPage() {
         >
           + New Category
         </Link>
+      </div>
+
+      {/* SEARCH */}
+      <div className="mb-4">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search by name or description…"
+          className="w-full max-w-sm border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
       </div>
 
       {/* TABLE */}
@@ -65,24 +77,19 @@ export default function CategoriesPage() {
           <tbody>
             {loading ? (
               <tr>
-                <td className="p-4" colSpan="3">
-                  Loading...
-                </td>
+                <td className="p-4 text-gray-500" colSpan="3">Loading…</td>
               </tr>
-            ) : categories.length === 0 ? (
+            ) : filtered.length === 0 ? (
               <tr>
                 <td className="p-4 text-gray-500" colSpan="3">
-                  No categories found
+                  {search ? `No categories matching "${search}"` : "No categories found"}
                 </td>
               </tr>
             ) : (
-              categories.map((c) => (
+              filtered.map((c) => (
                 <tr key={c.id} className="border-t hover:bg-gray-50">
                   <td className="p-4 font-medium">{c.name}</td>
-                  <td className="p-4 text-gray-600">
-                    {c.description || "—"}
-                  </td>
-
+                  <td className="p-4 text-gray-600">{c.description || "—"}</td>
                   <td className="p-4 text-right space-x-2">
                     <Link
                       href={`/categories/${c.id}`}
@@ -90,7 +97,6 @@ export default function CategoriesPage() {
                     >
                       Edit
                     </Link>
-
                     <button
                       onClick={() => deleteCategory(c.id)}
                       className="text-red-600 hover:bg-red-50 px-3 py-1 rounded"

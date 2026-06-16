@@ -12,37 +12,31 @@ export default function AuthLandingPage() {
   }, []);
 
   async function checkSession() {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
-
+    const { data: { session } } = await supabase.auth.getSession();
     if (session) {
       router.replace("/dashboard");
     }
   }
 
-  function goToLogin() {
-    router.push("/login");
-  }
-
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-gray-100">
+    <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4">
+      <div className="flex flex-col items-center gap-2 text-center">
 
-      <h1 className="text-3xl font-bold mb-2">
-        Inventory System
-      </h1>
+        <div className="mb-2 flex h-16 w-16 items-center justify-center rounded-2xl bg-blue-600 text-3xl shadow-md">
+          📦
+        </div>
 
-      <p className="text-gray-500 mb-6">
-        Secure access required
-      </p>
+        <h1 className="text-3xl font-bold text-slate-800">Inventory System</h1>
+        <p className="text-sm text-slate-500">Secure access required to continue.</p>
 
-      <button
-        onClick={goToLogin}
-        className="bg-blue-600 text-white px-6 py-3 rounded"
-      >
-        Login
-      </button>
+        <button
+          onClick={() => router.push("/login")}
+          className="mt-6 flex items-center gap-2 rounded-md bg-blue-600 px-8 py-3 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition-colors"
+        >
+          Sign In
+        </button>
 
+      </div>
     </div>
   );
 }
