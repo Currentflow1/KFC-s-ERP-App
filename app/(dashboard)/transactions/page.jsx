@@ -7,13 +7,12 @@ export default function TransactionLogsTable() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
 
   const fetchLogs = useCallback(async () => {
-    if (!supabase) return;
     setLoading(true);
     setError(null);
     try {
-      // Fetch oldest-first per product so we can compute running balance correctly
       const { data, error: fetchError } = await supabase
         .from("raw_materials_transaction_log")
         .select(
@@ -24,8 +23,7 @@ export default function TransactionLogsTable() {
 
       if (fetchError) throw fetchError;
 
-      // Compute before/after balance per product using a running total map
-      const runningBalance = {}; // { product_name: currentBalance }
+      const runningBalance = {};
       const enriched = (data ?? []).map((row) => {
         const product = row.product_name;
         const before = runningBalance[product] ?? 0;
@@ -35,258 +33,239 @@ export default function TransactionLogsTable() {
         return { ...row, balance_before: before, balance_after: after };
       });
 
-      // Reverse to show newest first for display
       setLogs(enriched.reverse());
     } catch (e) {
       setError(e.message);
     } finally {
       setLoading(false);
     }
-  }, [supabase]);
+  }, []);
 
   useEffect(() => {
     fetchLogs();
   }, [fetchLogs]);
 
-  const formatDateTime = (isoString) => {
+  function formatDateTime(isoString) {
     const date = new Date(isoString);
     return {
-      date: date.toLocaleDateString("en-PH", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-      }),
-      time: date.toLocaleTimeString("en-PH", {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-      }),
+      date: date.toLocaleDateString("en-PH", { year: "numeric", month: "short", day: "numeric" }),
+      time: date.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
     };
-  };
+  }
 
-  const getStockType = (row) => {
+  function getStockType(row) {
     if ((row.incoming_bal ?? 0) > 0) return "incoming";
     if ((row.outgoing_bal ?? 0) > 0) return "outgoing";
     return "none";
-  };
+  }
+
+  const filteredLogs = logs.filter((r) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+
+    const { date, time } = formatDateTime(r.created_at);
+    const stockType = getStockType(r);
+    const qty = stockType === "incoming" ? r.incoming_bal : stockType === "outgoing" ? r.outgoing_bal : null;
+
+    return [
+      r.product_name,
+      r.monitoring_employee,
+      r.representative_employee,
+      r.supplier_name && r.supplier_name !== "N/A" ? r.supplier_name : null,
+      stockType,
+      qty != null ? String(qty) : null,
+      String(r.balance_before),
+      String(r.balance_after),
+      date,
+      time,
+    ]
+      .filter(Boolean)
+      .some((field) => field.toLowerCase().includes(q));
+  });
 
   return (
-    <div className="min-h-screen bg-slate-50 p-6">
-      <div className="mx-auto max-w-7xl space-y-5">
+    <div className="p-8 bg-gray-50 min-h-screen">
 
-        {/* Header */}
-        <div className="flex items-center justify-between">
-          <div className="flex flex-col gap-1">
-            <h1 className="text-2xl font-bold text-slate-800">Transaction Logs</h1>
-            <p className="text-sm text-slate-500">
-              Full audit trail of every stock movement, including who made the change and inventory balance shifts.
-            </p>
-          </div>
-          <button
-            onClick={fetchLogs}
-            disabled={loading}
-            className="flex items-center gap-2 rounded-md border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50 disabled:opacity-60 transition-colors"
-          >
-            <span className={loading ? "animate-spin inline-block" : ""}>↻</span>
-            Refresh
-          </button>
+      {/* HEADER — matches InventoryHeader */}
+      <div className="mb-6 flex justify-between items-center">
+        <div>
+          <h1 className="text-2xl font-bold">Transaction Logs</h1>
+          <p className="text-sm text-gray-500">
+            Full audit trail of every stock movement
+          </p>
         </div>
+        <button
+          onClick={fetchLogs}
+          disabled={loading}
+          className="border px-4 py-2 rounded bg-white text-gray-700 hover:bg-gray-100 disabled:opacity-50 text-sm font-semibold"
+        >
+          <span className={loading ? "inline-block animate-spin mr-1" : "mr-1"}>↻</span>
+          Refresh
+        </button>
+      </div>
 
-        {/* Error */}
-        {error && (
-          <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            {error}
-          </div>
-        )}
+      {/* ERROR */}
+      {error && (
+        <div className="mb-4 rounded border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+          {error}
+        </div>
+      )}
 
-        {/* Table */}
-        <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
-          <div className="border-b border-slate-100 bg-slate-50 px-5 py-3 flex items-center justify-between">
-            <span className="text-xs font-bold uppercase tracking-widest text-slate-500">
-              Raw Materials — Audit Trail
+      {/* TABLE — matches InventoryTable wrapper */}
+      <div className="bg-white border rounded-lg overflow-x-auto">
+
+        {/* SEARCH — matches InventoryTable search bar */}
+        <div className="p-3 border-b bg-gray-50 flex items-center justify-between">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search products..."
+            className="border px-3 py-2 rounded w-full max-w-xs"
+          />
+          {!loading && (
+            <span className="text-xs text-gray-400 ml-3 whitespace-nowrap">
+              {filteredLogs.length} {filteredLogs.length === 1 ? "entry" : "entries"}
             </span>
-            {!loading && (
-              <span className="text-xs text-slate-400">
-                {logs.length} {logs.length === 1 ? "entry" : "entries"}
-              </span>
-            )}
-          </div>
-
-          {loading ? (
-            <div className="flex items-center justify-center py-20 text-sm text-slate-400">
-              Loading logs...
-            </div>
-          ) : logs.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-20 text-sm text-slate-400">
-              <span className="text-3xl">📋</span>
-              No transaction logs yet. Orders placed in the Order Table will appear here.
-            </div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead>
-                  <tr className="border-b border-slate-100 bg-slate-50 text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    <th className="px-4 py-3 whitespace-nowrap">Type</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Product</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Qty Changed</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Balance Before</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Balance After</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Supplier</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Monitoring</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Representative</th>
-                    <th className="px-4 py-3 whitespace-nowrap">Date & Time</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {logs.map((row) => {
-                    const stockType = getStockType(row);
-                    const { date, time } = formatDateTime(row.created_at);
-                    const isIncoming = stockType === "incoming";
-                    const isOutgoing = stockType === "outgoing";
-                    const qty = isIncoming
-                      ? row.incoming_bal
-                      : isOutgoing
-                      ? row.outgoing_bal
-                      : null;
-
-                    return (
-                      <tr key={row.id} className="transition-colors hover:bg-slate-50">
-
-                        {/* Type badge */}
-                        <td className="px-4 py-3">
-                          {isIncoming && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-700">
-                              ↓ Incoming
-                            </span>
-                          )}
-                          {isOutgoing && (
-                            <span className="inline-flex items-center gap-1 rounded-full bg-rose-50 px-2.5 py-0.5 text-xs font-semibold text-rose-700">
-                              ↑ Outgoing
-                            </span>
-                          )}
-                          {stockType === "none" && (
-                            <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-500">
-                              —
-                            </span>
-                          )}
-                        </td>
-
-                        {/* Product */}
-                        <td className="px-4 py-3 font-medium text-slate-800 whitespace-nowrap">
-                          {row.product_name}
-                        </td>
-
-                        {/* Qty Changed */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          {qty != null ? (
-                            <span
-                              className={`font-semibold ${
-                                isIncoming ? "text-blue-700" : "text-rose-700"
-                              }`}
-                            >
-                              {isIncoming ? `+${qty}` : `-${qty}`}
-                            </span>
-                          ) : (
-                            <span className="text-slate-300">—</span>
-                          )}
-                        </td>
-
-                        {/* Balance Before */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-xs text-slate-600">
-                            {row.balance_before}
-                          </span>
-                        </td>
-
-                        {/* Balance After */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-1.5">
-                            <span
-                              className={`rounded px-2 py-0.5 font-mono text-xs font-semibold ${
-                                isIncoming
-                                  ? "bg-blue-50 text-blue-700"
-                                  : isOutgoing
-                                  ? "bg-rose-50 text-rose-700"
-                                  : "bg-slate-100 text-slate-600"
-                              }`}
-                            >
-                              {row.balance_after}
-                            </span>
-                            {/* Low stock warning */}
-                            {row.balance_after <= 0 && (
-                              <span className="text-xs font-semibold text-red-500">
-                                ⚠ Empty
-                              </span>
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Supplier */}
-                        <td className="px-4 py-3 text-slate-600 whitespace-nowrap">
-                          {row.supplier_name ?? (
-                            <span className="text-slate-300">—</span>
-                          )}
-                        </td>
-
-                        {/* Monitoring employee */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-1.5">
-                            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-violet-100 text-xs font-bold text-violet-700">
-                              {row.monitoring_employee?.[0]?.toUpperCase() ?? "?"}
-                            </span>
-                            <span className="text-slate-700">{row.monitoring_employee}</span>
-                          </div>
-                        </td>
-
-                        {/* Representative employee */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex items-center gap-1.5">
-                            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700">
-                              {row.representative_employee?.[0]?.toUpperCase() ?? "?"}
-                            </span>
-                            <span className="text-slate-700">{row.representative_employee}</span>
-                          </div>
-                        </td>
-
-                        {/* Date & Time */}
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <div className="flex flex-col">
-                            <span className="text-xs font-semibold text-slate-700">{date}</span>
-                            <span className="text-xs text-slate-400">{time}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
           )}
         </div>
 
-        {/* Legend */}
-        <div className="flex flex-wrap items-center gap-4 text-xs text-slate-500">
-          <div className="flex items-center gap-1.5">
-            <span className="inline-block h-3 w-3 rounded-full bg-violet-200" />
-            Monitoring employee
+        {loading ? (
+          <div className="p-6 text-gray-500">Loading...</div>
+        ) : filteredLogs.length === 0 ? (
+          <div className="p-6 text-gray-500">
+            {logs.length === 0
+              ? "No transaction logs yet. Orders placed in the Order Table will appear here."
+              : "No results for that search."}
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="inline-block h-3 w-3 rounded-full bg-amber-200" />
-            Representative employee
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="font-mono bg-slate-100 px-1 rounded text-slate-600">n</span>
-            Balance before transaction
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="font-mono bg-blue-50 px-1 rounded text-blue-700">n</span>
-            Balance after (incoming)
-          </div>
-          <div className="flex items-center gap-1.5">
-            <span className="font-mono bg-rose-50 px-1 rounded text-rose-700">n</span>
-            Balance after (outgoing)
-          </div>
-        </div>
+        ) : (
+          <table className="w-full text-sm min-w-[1100px]">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="p-3 text-left">Type</th>
+                <th className="p-3 text-left">Product</th>
+                <th className="p-3 text-left">Qty Changed</th>
+                <th className="p-3 text-left">Balance Before</th>
+                <th className="p-3 text-left">Balance After</th>
+                <th className="p-3 text-left">Supplier</th>
+                <th className="p-3 text-left">Monitoring</th>
+                <th className="p-3 text-left">Representative</th>
+                <th className="p-3 text-left">Date & Time</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredLogs.map((row) => {
+                const stockType = getStockType(row);
+                const { date, time } = formatDateTime(row.created_at);
+                const isIncoming = stockType === "incoming";
+                const isOutgoing = stockType === "outgoing";
+                const qty = isIncoming
+                  ? row.incoming_bal
+                  : isOutgoing
+                  ? row.outgoing_bal
+                  : null;
+
+                return (
+                  <tr key={row.id} className="border-t hover:bg-gray-50">
+
+                    {/* Type */}
+                    <td className="p-3">
+                      {isIncoming && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-50 text-green-700">
+                          ↓ Incoming
+                        </span>
+                      )}
+                      {isOutgoing && (
+                        <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-red-50 text-red-700">
+                          ↑ Outgoing
+                        </span>
+                      )}
+                      {stockType === "none" && (
+                        <span className="text-xs text-gray-400">—</span>
+                      )}
+                    </td>
+
+                    {/* Product */}
+                    <td className="p-3 font-medium">{row.product_name}</td>
+
+                    {/* Qty Changed */}
+                    <td className="p-3">
+                      {qty != null ? (
+                        <span className={`font-semibold ${isIncoming ? "text-green-600" : "text-red-600"}`}>
+                          {isIncoming ? `+${qty}` : `-${qty}`}
+                        </span>
+                      ) : (
+                        <span className="text-gray-300">—</span>
+                      )}
+                    </td>
+
+                    {/* Balance Before */}
+                    <td className="p-3">
+                      <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded text-gray-600">
+                        {row.balance_before}
+                      </span>
+                    </td>
+
+                    {/* Balance After */}
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded ${
+                          isIncoming ? "bg-green-50 text-green-700"
+                          : isOutgoing ? "bg-red-50 text-red-700"
+                          : "bg-gray-100 text-gray-600"
+                        }`}>
+                          {row.balance_after}
+                        </span>
+                        {row.balance_after <= 0 && (
+                          <span className="text-xs font-semibold text-red-500">⚠ Empty</span>
+                        )}
+                        {row.balance_after > 0 && row.balance_after < 100 && (
+                          <span className="text-xs font-semibold text-orange-500">⚠ Low</span>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* Supplier — hide N/A placeholder */}
+                    <td className="p-3 text-gray-600">
+                      {row.supplier_name && row.supplier_name !== "N/A"
+                        ? row.supplier_name
+                        : <span className="text-gray-300">—</span>}
+                    </td>
+
+                    {/* Monitoring */}
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">
+                          {row.monitoring_employee?.[0]?.toUpperCase() ?? "?"}
+                        </span>
+                        <span className="text-gray-700">{row.monitoring_employee}</span>
+                      </div>
+                    </td>
+
+                    {/* Representative */}
+                    <td className="p-3">
+                      <div className="flex items-center gap-1.5">
+                        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700">
+                          {row.representative_employee?.[0]?.toUpperCase() ?? "?"}
+                        </span>
+                        <span className="text-gray-700">{row.representative_employee}</span>
+                      </div>
+                    </td>
+
+                    {/* Date & Time */}
+                    <td className="p-3">
+                      <div className="flex flex-col">
+                        <span className="text-xs font-semibold text-gray-700">{date}</span>
+                        <span className="text-xs text-gray-400">{time}</span>
+                      </div>
+                    </td>
+
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   );
