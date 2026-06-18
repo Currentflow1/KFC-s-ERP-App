@@ -1,14 +1,13 @@
 import "./globals.css";
 
-export const metadata = {
-  title: "KFC's ERP System",
-  description: "ERP inventory app",
-};
+export const metadata = { title: "Inventory System" };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>{children}</body>
+      <body>
+        {children}
+      </body>
     </html>
   );
 }

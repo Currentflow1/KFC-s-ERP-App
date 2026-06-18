@@ -2,6 +2,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import LogoutButton from "./LogoutButton";
 
 export default function Sidebar() {
   const pathname = usePathname();
@@ -30,21 +31,16 @@ export default function Sidebar() {
       ],
     },
   ];
-
+  
   return (
     <aside
-      className={`bg-zinc-700 min-h-screen p-3 transition-all duration-300 ${
+      className={`sticky top-0 h-screen flex flex-col bg-zinc-700 p-3 transition-all duration-300 overflow-y-auto ${
         open ? "w-64" : "w-16"
       }`}
     >
       <div className="flex p-1 items-center justify-between">
-        {open && (
-          <h1 className="text-white text-2xl font-bold ml-4">Menu</h1>
-        )}
-        <button
-          onClick={() => setOpen(!open)}
-          className="text-white font-bold text-xl mr-2 p-2 rounded hover:bg-zinc-600"
-        >
+        {open && <h1 className="text-white text-2xl font-bold ml-4">Menu</h1>}
+        <button onClick={() => setOpen(!open)} className="text-white font-bold text-xl mr-2 p-2 rounded hover:bg-zinc-600">
           ☰
         </button>
       </div>
@@ -54,14 +50,11 @@ export default function Sidebar() {
       <nav className="flex flex-col mt-2 gap-4">
         {groups.map((group) => (
           <div key={group.label}>
-
-            {/* Group label — only visible when expanded */}
             {open && (
               <p className="text-zinc-400 text-xs uppercase tracking-widest px-2 mb-1">
                 {group.label}
               </p>
             )}
-
             <div className="flex flex-col gap-1">
               {group.links.map((link) => (
                 <Link
@@ -76,12 +69,14 @@ export default function Sidebar() {
                 </Link>
               ))}
             </div>
-
-            {/* Divider between groups */}
             <hr className="border-zinc-600 mt-3" />
           </div>
         ))}
       </nav>
+
+      <div className="mt-4">
+        <LogoutButton collapsed={!open} />
+      </div>
     </aside>
   );
 }
