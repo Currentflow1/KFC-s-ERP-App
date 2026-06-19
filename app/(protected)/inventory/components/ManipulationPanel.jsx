@@ -12,13 +12,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   const [role, setRole]     = useState(null); // null = loading
   const [userId, setUserId] = useState(null);
 
-  // Monitoring employee — required by the transaction log schema
-  // (monitoring_employee is NOT NULL with a FK into monitoring_employee.name)
-  const [monitoringOptions, setMonitoringOptions]     = useState([]);
-  const [monitoringEmployee, setMonitoringEmployee]   = useState("");
-  const [txError, setTxError]                         = useState(null);
+  const [monitoringOptions, setMonitoringOptions]   = useState([]);
+  const [monitoringEmployee, setMonitoringEmployee] = useState("");
+  const [txError, setTxError]                       = useState(null);
 
-  // Fetch role, current user, and monitoring-employee options once on mount
   useEffect(() => {
     async function init() {
       const { data: { user } } = await supabase.auth.getUser();
@@ -49,6 +46,9 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   const pendingIn        = Number(item._pendingIncoming ?? 0);
   const pendingOut       = Number(item._pendingOutgoing ?? 0);
 
+  // ── +IN / −OUT ────────────────────────────────────────────────────────────
+  // Logs a "stock_movement" tx row with actual_bal + loss snapshotted.
+
   async function applyChange(mode) {
     const q = Number(qty || 0);
     if (!q) { setQty(""); return; }
@@ -59,9 +59,6 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
     setTxError(null);
     setSaving(true);
 
-    // The closure below returns the inserted transaction-log row's id (or
-    // null) — InventoryPage's requestManipulationUpdate uses that to attach
-    // the tx row to this undo entry, so "Undo Item" can clean it up too.
     await onUpdated(async () => {
       const { data, error: fetchError } = await supabase
         .from(table).select("*").eq("id", item.id).maybeSingle();
@@ -69,11 +66,13 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
         return null;
       }
+
       const beg    = Number(data.beg_bal     ?? 0);
       let incoming = Number(data.incoming_bal ?? 0);
       let outgoing = Number(data.outgoing_bal ?? 0);
       if (mode === "in")  incoming += q;
       if (mode === "out") outgoing += q;
+
       const current_bal     = beg + incoming - outgoing;
       const existing_actual = data.actual_bal != null ? Number(data.actual_bal) : null;
       const actual_bal      = existing_actual ?? current_bal;
@@ -86,27 +85,21 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
       });
       if (error) { alert("Update failed: " + error.message); return null; }
 
-      // Mirror this adjustment into the transaction log so it shows up in
-      // Transaction Logs (audit trail, Account Responsible, calendar
-      // history). finalized_at is set immediately — the balance change
-      // above is already committed directly to the inventory table, so
-      // this row must never be summed again as "pending" during the next
-      // Finalize Day.
-      //
-      // transaction_source: "manipulated" distinguishes this from a normal
-      // order placed via the Order Table ("ordered").
       const { data: txRow, error: txInsertError } = await supabase
         .from(txTable)
         .insert({
-          inventory_id:        item.id,
-          monitoring_employee: monitoringEmployee,
+          inventory_id:            item.id,
+          monitoring_employee:     monitoringEmployee,
           representative_employee: null,
-          product_name:        item.name,
-          incoming_bal:        mode === "in"  ? q : 0,
-          outgoing_bal:        mode === "out" ? q : 0,
-          finalized_at:        new Date().toISOString(),
-          created_by:          userId,
-          transaction_source:  "manipulated",
+          product_name:            item.name,
+          incoming_bal:            mode === "in"  ? q : 0,
+          outgoing_bal:            mode === "out" ? q : 0,
+          finalized_at:            new Date().toISOString(),
+          created_by:              userId,
+          transaction_source:      "manipulated",
+          transaction_type:        "stock_movement",
+          actual_bal,
+          loss,
         })
         .select("id")
         .single();
@@ -123,9 +116,20 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
     setQty("");
   }
 
+  // ── Set actual count ──────────────────────────────────────────────────────
+  // Logs a "count_correction" tx row. No stock moved so incoming/outgoing
+  // are both 0 — the Type column in Transaction Logs will show a distinct
+  // "Count Correction" badge instead of ↓ Incoming / ↑ Outgoing.
+
   async function setActualValue() {
     if (actual === "") return;
+    if (!monitoringEmployee) {
+      setTxError("Select a monitoring employee before setting an actual count.");
+      return;
+    }
+    setTxError(null);
     setSaving(true);
+
     await onUpdated(async () => {
       const { data, error: fetchError } = await supabase
         .from(table).select("*").eq("id", item.id).maybeSingle();
@@ -133,23 +137,52 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
         return null;
       }
-      const a    = Number(actual);
-      const loss = Math.max(0, displayedCurrent - a);
+
+      const a           = Number(actual);
+      const current_bal = Number(data.current_bal ?? 0);
+      const loss        = Math.max(0, current_bal - a);
+
       const { error } = await supabase.from(table).upsert({
         id: item.id, name: item.name,
         beg_bal:      Number(data.beg_bal      ?? 0),
         incoming_bal: Number(data.incoming_bal  ?? 0),
         outgoing_bal: Number(data.outgoing_bal  ?? 0),
-        current_bal:  Number(data.current_bal   ?? 0),
-        actual_bal: a, loss,
+        current_bal,
+        actual_bal:   a,
+        loss,
       });
-      if (error) alert("Update failed: " + error.message);
-      // Not mirrored to the transaction log — this is a count correction,
-      // not a stock movement. Your schema's inventory_ledger table looks
-      // purpose-built for auditing this kind of field-level change if you
-      // want that later.
-      return null;
+      if (error) { alert("Update failed: " + error.message); return null; }
+
+      // Log the count correction as its own tx row so it appears in
+      // Transaction Logs with a "Count Correction" badge. incoming/outgoing
+      // are 0 because no stock moved — only the actual count changed.
+      const { data: txRow, error: txInsertError } = await supabase
+        .from(txTable)
+        .insert({
+          inventory_id:            item.id,
+          monitoring_employee:     monitoringEmployee,
+          representative_employee: null,
+          product_name:            item.name,
+          incoming_bal:            0,
+          outgoing_bal:            0,
+          finalized_at:            new Date().toISOString(),
+          created_by:              userId,
+          transaction_source:      "manipulated",
+          transaction_type:        "count_correction",
+          actual_bal:              a,
+          loss,
+        })
+        .select("id")
+        .single();
+
+      if (txInsertError) {
+        alert("Inventory updated, but failed to log the count correction: " + txInsertError.message);
+        return null;
+      }
+
+      return txRow?.id ?? null;
     });
+
     setSaving(false);
     setActual("");
   }
@@ -237,7 +270,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
           ))}
         </select>
         <p className="text-[11px] text-gray-400 mt-1">
-          Required for +IN / −OUT — attributed in the Transaction Logs audit trail.
+          Required for all actions — attributed in the Transaction Logs audit trail.
         </p>
       </div>
 
@@ -245,6 +278,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         <p className="text-xs text-red-500 mb-2">{txError}</p>
       )}
 
+      {/* +IN / −OUT */}
       <input
         value={qty}
         onChange={(e) => setQty(e.target.value)}
@@ -270,26 +304,32 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         </button>
       </div>
 
-      <input
-        value={actual}
-        onChange={(e) => setActual(e.target.value)}
-        placeholder="Set actual count"
-        type="number"
-        min="0"
-        className="border p-2 w-full mb-2 rounded text-sm text-gray-900"
-      />
-      {lossPreview !== null && (
-        <p className={`text-xs mb-2 ${lossPreview > 0 ? "text-red-500" : "text-green-600"}`}>
-          Loss preview: {lossPreview}{lossPreview === 0 ? " (no loss)" : ""}
-        </p>
-      )}
-      <button
-        onClick={setActualValue}
-        disabled={saving}
-        className="bg-purple-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50"
-      >
-        {saving ? "Saving…" : "Update actual"}
-      </button>
+      {/* Set actual count */}
+      <div className="border-t border-gray-100 pt-3">
+        <label className="text-xs font-medium uppercase tracking-wide text-gray-500 block mb-1">
+          Set actual count
+        </label>
+        <input
+          value={actual}
+          onChange={(e) => setActual(e.target.value)}
+          placeholder="Actual count"
+          type="number"
+          min="0"
+          className="border p-2 w-full mb-2 rounded text-sm text-gray-900"
+        />
+        {lossPreview !== null && (
+          <p className={`text-xs mb-2 ${lossPreview > 0 ? "text-red-500" : "text-green-600"}`}>
+            Loss preview: {lossPreview}{lossPreview === 0 ? " (no loss)" : ""}
+          </p>
+        )}
+        <button
+          onClick={setActualValue}
+          disabled={saving}
+          className="bg-purple-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50"
+        >
+          {saving ? "Saving…" : "Update actual"}
+        </button>
+      </div>
     </div>
   );
 }
