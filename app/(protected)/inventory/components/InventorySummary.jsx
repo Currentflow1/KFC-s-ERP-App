@@ -65,7 +65,7 @@ export default function InventorySummary({ tab }) {
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
-      <div className="bg-white border rounded-lg p-4">
+      <div className="text-black bg-white border rounded-lg p-4">
         <h3 className="font-bold mb-2">
           Last 7 days {weekly.days > 0 ? `(${weekly.days} closed day${weekly.days === 1 ? "" : "s"})` : "(no data yet)"}
         </h3>
@@ -76,7 +76,7 @@ export default function InventorySummary({ tab }) {
         </div>
       </div>
 
-      <div className="bg-white border rounded-lg p-4">
+      <div className="text-black bg-white border rounded-lg p-4">
         <h3 className="font-bold mb-2">
           Last 30 days {monthly.days > 0 ? `(${monthly.days} closed day${monthly.days === 1 ? "" : "s"})` : "(no data yet)"}
         </h3>

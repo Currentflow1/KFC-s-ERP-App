@@ -2,11 +2,15 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabaseClient";
+import TransactionCalendar from "./components/TransactionalCalendar";
 
 const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
 
-const RAW_SELECT    = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, created_at";
-const FIN_SELECT    = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, created_at";
+const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, created_at";
+const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, created_at";
+
+function pad(n) { return n.toString().padStart(2, "0"); }
+function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 
 export default function TransactionLogsTable() {
   const supabase = useMemo(() => createClient(), []);
@@ -16,6 +20,7 @@ export default function TransactionLogsTable() {
   const [loading, setLoading]         = useState(false);
   const [error, setError]             = useState(null);
   const [search, setSearch]           = useState("");
+  const [selectedDate, setSelectedDate] = useState("");
 
   const isRaw = productType === PRODUCT_TYPE.RAW;
 
@@ -54,6 +59,7 @@ export default function TransactionLogsTable() {
   useEffect(() => {
     fetchLogs();
     setSearch("");
+    setSelectedDate("");
   }, [fetchLogs]);
 
   function formatDateTime(isoString) {
@@ -71,6 +77,10 @@ export default function TransactionLogsTable() {
   }
 
   const filteredLogs = logs.filter((r) => {
+    if (selectedDate) {
+      const rowDate = toDateString(new Date(r.created_at));
+      if (rowDate !== selectedDate) return false;
+    }
     const q = search.trim().toLowerCase();
     if (!q) return true;
     const { date, time } = formatDateTime(r.created_at);
@@ -95,7 +105,6 @@ export default function TransactionLogsTable() {
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
 
-      {/* Header */}
       <div className="mb-5 flex justify-between items-start">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Transaction Logs</h1>
@@ -111,7 +120,6 @@ export default function TransactionLogsTable() {
         </button>
       </div>
 
-      {/* Control bar */}
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button
@@ -131,16 +139,29 @@ export default function TransactionLogsTable() {
             Finished Products
           </button>
         </div>
+
+        <div className="w-px h-6 bg-gray-200 mx-0.5" />
+
+        {/* Same calendar function as Inventory/Dashboard — now applied to transactions */}
+        <TransactionCalendar
+          productType={productType}
+          date={selectedDate}
+          onSelectDate={setSelectedDate}
+        />
+
+        {selectedDate && (
+          <span className="text-xs text-blue-600 font-medium bg-blue-50 border border-blue-200 px-2 py-1 rounded-md">
+            Showing: {selectedDate}
+          </span>
+        )}
       </div>
 
-      {/* Error */}
       {error && (
         <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
           {error}
         </div>
       )}
 
-      {/* Table */}
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
 
         <div className="flex items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
@@ -154,7 +175,7 @@ export default function TransactionLogsTable() {
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="text-black text-sm text-gray-400 hover:text-gray-600 transition-colors"
+              className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
             >
               Clear
             </button>
@@ -173,7 +194,9 @@ export default function TransactionLogsTable() {
             <div className="px-4 py-8 text-sm text-gray-400 text-center">
               {logs.length === 0
                 ? "No transaction logs yet. Orders placed in the Order Table will appear here."
-                : "No results for that search."}
+                : selectedDate
+                  ? `No transactions on ${selectedDate}.`
+                  : "No results for that search."}
             </div>
           ) : (
             <table className="w-full text-sm min-w-[1100px]">
@@ -201,17 +224,14 @@ export default function TransactionLogsTable() {
                   return (
                     <tr key={row.id} className="hover:bg-gray-50 transition-colors">
 
-                      {/* Type */}
                       <td className="px-4 py-3">
                         {isIncoming && <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">↓ Incoming</span>}
                         {isOutgoing && <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-700">↑ Outgoing</span>}
                         {stockType === "none" && <span className="text-xs text-gray-400">—</span>}
                       </td>
 
-                      {/* Product */}
                       <td className="px-4 py-3 font-medium text-gray-900">{row.product_name}</td>
 
-                      {/* Qty Changed */}
                       <td className="px-4 py-3">
                         {qty != null ? (
                           <span className={`font-semibold ${isIncoming ? "text-green-600" : "text-red-600"}`}>
@@ -222,14 +242,12 @@ export default function TransactionLogsTable() {
                         )}
                       </td>
 
-                      {/* Balance Before */}
                       <td className="px-4 py-3">
                         <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded-md text-gray-600">
                           {row.balance_before}
                         </span>
                       </td>
 
-                      {/* Balance After */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5">
                           <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md ${
@@ -248,7 +266,6 @@ export default function TransactionLogsTable() {
                         </div>
                       </td>
 
-                      {/* Supplier — raw only, null-safe */}
                       {isRaw && (
                         <td className="px-4 py-3 text-gray-600">
                           {row.supplier_name
@@ -257,7 +274,6 @@ export default function TransactionLogsTable() {
                         </td>
                       )}
 
-                      {/* Monitoring */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-1.5">
                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">
@@ -267,7 +283,6 @@ export default function TransactionLogsTable() {
                         </div>
                       </td>
 
-                      {/* Representative — null for incoming orders */}
                       <td className="px-4 py-3">
                         {row.representative_employee
                           ? (
@@ -282,7 +297,6 @@ export default function TransactionLogsTable() {
                         }
                       </td>
 
-                      {/* Date & Time */}
                       <td className="px-4 py-3">
                         <div className="flex flex-col">
                           <span className="text-xs font-semibold text-gray-700">{date}</span>

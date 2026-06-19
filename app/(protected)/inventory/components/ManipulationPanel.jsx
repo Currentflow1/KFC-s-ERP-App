@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
 export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
@@ -9,11 +9,27 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   const [qty, setQty]       = useState("");
   const [actual, setActual] = useState("");
   const [saving, setSaving] = useState(false);
+  const [role, setRole]     = useState(null); // null = loading
 
-  const table =
-    tab === "finished"
-      ? "finished_products_inventory"
-      : "raw_materials_inventory";
+  // Fetch role once on mount
+  useEffect(() => {
+    async function fetchRole() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setRole("staff"); return; }
+      const { data: profile } = await supabase
+        .from("profiles")
+        .select("role")
+        .eq("id", user.id)
+        .single();
+      setRole(profile?.role ?? "staff");
+    }
+    fetchRole();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const table = tab === "finished"
+    ? "finished_products_inventory"
+    : "raw_materials_inventory";
 
   const displayedCurrent = Number(item.current_bal ?? 0);
   const pendingIn        = Number(item._pendingIncoming ?? 0);
@@ -22,86 +38,56 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   async function applyChange(mode) {
     const q = Number(qty || 0);
     if (!q) { setQty(""); return; }
-
     setSaving(true);
     await onUpdated(async () => {
       const { data, error: fetchError } = await supabase
-        .from(table)
-        .select("*")
-        .eq("id", item.id)
-        .maybeSingle();
-
+        .from(table).select("*").eq("id", item.id).maybeSingle();
       if (fetchError || !data) {
         alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
         return;
       }
-
-      const beg      = Number(data.beg_bal      ?? 0);
-      let incoming   = Number(data.incoming_bal  ?? 0);
-      let outgoing   = Number(data.outgoing_bal  ?? 0);
-
+      const beg    = Number(data.beg_bal     ?? 0);
+      let incoming = Number(data.incoming_bal ?? 0);
+      let outgoing = Number(data.outgoing_bal ?? 0);
       if (mode === "in")  incoming += q;
       if (mode === "out") outgoing += q;
-
-      const current_bal = beg + incoming - outgoing;
-
+      const current_bal     = beg + incoming - outgoing;
       const existing_actual = data.actual_bal != null ? Number(data.actual_bal) : null;
       const actual_bal      = existing_actual ?? current_bal;
-      const loss            = existing_actual != null
-        ? Math.max(0, current_bal - existing_actual)
-        : 0;
-
+      const loss            = existing_actual != null ? Math.max(0, current_bal - existing_actual) : 0;
       const { error } = await supabase.from(table).upsert({
-        id:           item.id,
-        name:         item.name,
-        beg_bal:      beg,
-        incoming_bal: incoming,
-        outgoing_bal: outgoing,
-        current_bal,
-        actual_bal,
-        loss,
+        id: item.id, name: item.name,
+        beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing,
+        current_bal, actual_bal, loss,
       });
-
       if (error) alert("Update failed: " + error.message);
     });
-
     setSaving(false);
     setQty("");
   }
 
   async function setActualValue() {
     if (actual === "") return;
-
     setSaving(true);
     await onUpdated(async () => {
       const { data, error: fetchError } = await supabase
-        .from(table)
-        .select("*")
-        .eq("id", item.id)
-        .maybeSingle();
-
+        .from(table).select("*").eq("id", item.id).maybeSingle();
       if (fetchError || !data) {
         alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
         return;
       }
-
       const a    = Number(actual);
       const loss = Math.max(0, displayedCurrent - a);
-
       const { error } = await supabase.from(table).upsert({
-        id:           item.id,
-        name:         item.name,
+        id: item.id, name: item.name,
         beg_bal:      Number(data.beg_bal      ?? 0),
         incoming_bal: Number(data.incoming_bal  ?? 0),
         outgoing_bal: Number(data.outgoing_bal  ?? 0),
         current_bal:  Number(data.current_bal   ?? 0),
-        actual_bal:   a,
-        loss,
+        actual_bal: a, loss,
       });
-
       if (error) alert("Update failed: " + error.message);
     });
-
     setSaving(false);
     setActual("");
   }
@@ -109,6 +95,40 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   const lossPreview = actual !== ""
     ? Math.max(0, displayedCurrent - Number(actual))
     : null;
+
+  // ── Loading ───────────────────────────────────────────────────────────────
+
+  if (role === null) {
+    return (
+      <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10">
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="font-bold text-base">{item.name}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+        <p className="text-sm text-gray-400 text-center py-6 animate-pulse">Checking permissions…</p>
+      </div>
+    );
+  }
+
+  // ── Staff: blocked ────────────────────────────────────────────────────────
+
+  if (role !== "admin") {
+    return (
+      <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10">
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-bold text-base">{item.name}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+        </div>
+        <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-6 text-center">
+          <div className="text-3xl mb-2">🔒</div>
+          <p className="text-sm font-semibold text-red-700">Access Restricted</p>
+          <p className="text-xs text-red-400 mt-1">Only admins can manipulate inventory.</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Admin: full panel ─────────────────────────────────────────────────────
 
   return (
     <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10">

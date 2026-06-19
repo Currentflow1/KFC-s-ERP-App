@@ -6,7 +6,15 @@ import { createClient } from "@/lib/supabaseClient";
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 
-export default function InventoryCalendar({ tab, date, onSelectDate }) {
+/**
+ * Calendar for the Transaction Logs page.
+ * Mirrors InventoryCalendar exactly: same markup, same open/close behavior,
+ * same month-grid logic, same dot-indicator pattern — but fetches its
+ * "has activity" dates from the transaction log table itself (grouped by
+ * day) instead of an inventory_history table, since transaction logs
+ * don't have daily snapshots — every row IS the activity.
+ */
+export default function TransactionCalendar({ productType, date, onSelectDate }) {
   const supabase = useMemo(() => createClient(), []);
 
   const [open, setOpen] = useState(false);
@@ -17,9 +25,9 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
     return new Date(base.getFullYear(), base.getMonth(), 1);
   });
 
-  useEffect(() => { loadAvailableDates(); }, [tab]);
+  useEffect(() => { loadAvailableDates(); }, [productType]);
 
-  // Close on outside click — matches Transaction Logs calendar behavior
+  // Close on outside click — matches InventoryCalendar behavior
   useEffect(() => {
     function handler(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
@@ -29,11 +37,14 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
   }, []);
 
   async function loadAvailableDates() {
-    const table = tab === "finished"
-      ? "finished_products_inventory_history"
-      : "raw_materials_inventory_history";
-    const { data } = await supabase.from(table).select("inventory_date");
-    setAvailableDates(new Set((data || []).map((d) => d.inventory_date)));
+    const table = productType === "finished"
+      ? "finished_products_transaction_log"
+      : "raw_materials_transaction_log";
+    const { data } = await supabase.from(table).select("created_at");
+    const dates = new Set(
+      (data || []).map((r) => toDateString(new Date(r.created_at)))
+    );
+    setAvailableDates(dates);
   }
 
   function changeMonth(offset) {
@@ -61,7 +72,7 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
         className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-gray-200 bg-white text-sm text-gray-700 hover:border-blue-400 transition-colors"
       >
         <span>📅</span>
-        <span>{date ? date : "Today (live)"}</span>
+        <span>{date ? date : "All dates"}</span>
         {date && (
           <span
             onClick={(e) => { e.stopPropagation(); onSelectDate(""); }}
@@ -94,7 +105,7 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
               const dStr = toDateString(cellDate);
               const isSelected = date === dStr;
               const isToday = dStr === todayStr;
-              const hasSnapshot = availableDates.has(dStr);
+              const hasActivity = availableDates.has(dStr);
               return (
                 <button
                   key={idx}
@@ -104,13 +115,13 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
                       ? "bg-blue-600 text-white"
                       : isToday
                         ? "border border-blue-400 text-gray-900 font-semibold"
-                        : hasSnapshot
+                        : hasActivity
                           ? "text-gray-800 hover:bg-blue-50"
                           : "text-gray-400 hover:bg-gray-50"
                   }`}
                 >
                   {cellDate.getDate()}
-                  {hasSnapshot && (
+                  {hasActivity && (
                     <span className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${
                       isSelected ? "bg-white" : "bg-blue-500"
                     }`} />
@@ -126,9 +137,9 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
               onClick={() => { onSelectDate(""); setOpen(false); }}
               className="text-xs px-3 py-1 rounded border border-gray-200 text-gray-600 hover:bg-gray-50"
             >
-              Today (live)
+              Show all
             </button>
-            <span className="text-xs text-gray-400">dots = stored snapshots</span>
+            <span className="text-xs text-gray-400">dots = activity</span>
           </div>
         </div>
       )}

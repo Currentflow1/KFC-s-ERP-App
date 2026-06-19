@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { createClient } from "@/lib/supabaseClient";
 import InventoryHeader from "./components/InventoryHeader";
 import InventoryTable from "./components/InventoryTable";
@@ -8,167 +8,92 @@ import ManipulatePanel from "./components/ManipulationPanel";
 import InventoryCalendar from "./components/InventoryCalendar";
 import InventorySummary from "./components/InventorySummary";
 
-function txTable(isRaw) {
-  return isRaw ? "raw_materials_transaction_log" : "finished_products_transaction_log";
-}
-function inventoryTable(isRaw) {
-  return isRaw ? "raw_materials_inventory" : "finished_products_inventory";
-}
-function historyTable(isRaw) {
-  return isRaw ? "raw_materials_inventory_history" : "finished_products_inventory_history";
-}
-function staticTable(isRaw) {
-  return isRaw ? "raw_materials_static" : "finished_products_static";
-}
-function todayISO() {
-  return new Date().toISOString().slice(0, 10);
+function txTable(isRaw)   { return isRaw ? "raw_materials_transaction_log"      : "finished_products_transaction_log"; }
+function invTable(isRaw)  { return isRaw ? "raw_materials_inventory"             : "finished_products_inventory"; }
+function histTable(isRaw) { return isRaw ? "raw_materials_inventory_history"     : "finished_products_inventory_history"; }
+function staticTbl(isRaw) { return isRaw ? "raw_materials_static"               : "finished_products_static"; }
+
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
 export default function InventoryPage() {
   const supabase = createClient();
 
-  const [tab, setTab]                           = useState("finished");
-  const [items, setItems]                       = useState([]);
-  const [date, setDate]                         = useState("");
-  const [loading, setLoading]                   = useState(false);
-  const [finalizing, setFinalizing]             = useState(false);
-  const [alreadyFinalized, setAlreadyFinalized] = useState(false);
-  const [undoing, setUndoing]                   = useState(null);
-  const [canUndoItem, setCanUndoItem]           = useState(false);
-  const [canUndoSession, setCanUndoSession]     = useState(false);
-  const [canUndoCloseDay, setCanUndoCloseDay]   = useState(false);
-  const [activeItem, setActiveItem]             = useState(null);
-  const [mounted, setMounted]                   = useState(false);
+  const [tab,  setTab]  = useState("finished");
+  const [date, setDate] = useState("");
 
-  const isRaw = tab === "raw";
+  const [items,             setItems]             = useState([]);
+  const [loading,           setLoading]           = useState(false);
+  const [finalizing,        setFinalizing]        = useState(false);
+  const [alreadyFinalized,  setAlreadyFinalized]  = useState(false);
+  const [undoing,           setUndoing]           = useState(null);
+  const [canUndoItem,       setCanUndoItem]       = useState(false);
+  const [canUndoSession,    setCanUndoSession]    = useState(false);
+  const [canUndoCloseDay,   setCanUndoCloseDay]   = useState(false);
+  const [activeItem,        setActiveItem]        = useState(null);
+  const [booted,            setBooted]            = useState(false);
 
-  async function checkFinalized() {
-    const today = todayISO();
-    const { data } = await supabase
-      .from(historyTable(isRaw))
+  // ── Refs: always hold the latest committed value ──────────────────────────
+  // Never read tab/date from closure — always read from ref.
+  const tabRef  = useRef("finished");
+  const dateRef = useRef("");
+
+  // Keep refs in sync — these run synchronously before the next render paint
+  tabRef.current  = tab;
+  dateRef.current = date;
+
+  // ── Core helpers (always read from ref, never closure) ────────────────────
+
+  function isRawNow()  { return tabRef.current === "raw"; }
+  function dateNow()   { return dateRef.current; }
+
+  // ── checkFinalizedFor — always pass tab explicitly, never rely on ref/state
+  // This is the single source of truth for the finalize button.
+
+  async function checkFinalizedFor(whichTab) {
+    const isRaw = whichTab === "raw";
+    const today = todayLocal();
+    const { data, error } = await supabase
+      .from(histTable(isRaw))
       .select("id")
       .eq("inventory_date", today)
       .limit(1);
+    if (error) {
+      console.error("checkFinalizedFor error:", error.message);
+      return;
+    }
     setAlreadyFinalized(!!(data && data.length > 0));
   }
 
-  useEffect(() => {
-    saveSnapshot("session").then(() => {
-      loadData();
-      checkUndoAvailability();
-      checkFinalized();
-    });
-  }, []);
+  // ── Undo availability ─────────────────────────────────────────────────────
 
-  useEffect(() => {
-    if (!mounted) { setMounted(true); return; }
-    loadData();
-    checkUndoAvailability();
-    checkFinalized();
-  }, [tab, date]);
-
-  async function checkUndoAvailability() {
-    const { data } = await supabase
-      .from("undo_log")
-      .select("id, undo_type")
-      .eq("tab", tab)
-      .order("created_at", { ascending: false })
-      .limit(20);
-    const logs = data || [];
-    setCanUndoItem(logs.some((l) => l.undo_type === "item_change"));
-    setCanUndoSession(logs.some((l) => l.undo_type === "session"));
-    setCanUndoCloseDay(logs.some((l) => l.undo_type === "close_day"));
+  async function checkUndoAvailability(whichTab) {
+    const t = whichTab ?? tabRef.current;
+    const [itemRes, sessionRes, closeDayRes] = await Promise.all([
+      supabase.from("undo_log").select("id").eq("tab", t).eq("undo_type", "item_change").order("created_at", { ascending: false }).limit(1),
+      supabase.from("undo_log").select("id").eq("tab", t).eq("undo_type", "session")    .order("created_at", { ascending: false }).limit(1),
+      supabase.from("undo_log").select("id").eq("tab", t).eq("undo_type", "close_day")  .order("created_at", { ascending: false }).limit(1),
+    ]);
+    setCanUndoItem    ((itemRes.data     || []).length > 0);
+    setCanUndoSession ((sessionRes.data  || []).length > 0);
+    setCanUndoCloseDay((closeDayRes.data || []).length > 0);
   }
 
-  async function saveSnapshot(undoType) {
-    const table = inventoryTable(isRaw);
-    const { data: currentRows } = await supabase.from(table).select("*");
-    await supabase
-      .from("undo_log")
-      .insert({ undo_type: undoType, tab, snapshot: currentRows || [] });
-  }
+  // ── Load data — always pass tab/date explicitly so there's no stale closure
 
-  async function restoreSnapshot(undoType) {
-    const { data: logs } = await supabase
-      .from("undo_log")
-      .select("*")
-      .eq("tab", tab)
-      .eq("undo_type", undoType)
-      .order("created_at", { ascending: false })
-      .limit(1);
-    if (!logs || logs.length === 0) { alert("No undo snapshot found."); return false; }
-    const log = logs[0];
-    const table = inventoryTable(isRaw);
-    if (log.snapshot && log.snapshot.length > 0) {
-      const { error } = await supabase
-        .from(table)
-        .upsert(log.snapshot, { onConflict: "id" });
-      if (error) { alert("Restore failed: " + error.message); return false; }
-    }
-    await supabase.from("undo_log").delete().eq("id", log.id);
-    return true;
-  }
+  async function loadData(whichTab, whichDate) {
+    const isRaw     = (whichTab  ?? tabRef.current)  === "raw";
+    const chosenDate = whichDate ?? dateRef.current;
+    const isHistory  = chosenDate !== "";
 
-  function afterUndo() {
-    if (date !== "") setDate("");
-    else { loadData(); checkUndoAvailability(); checkFinalized(); }
-  }
-
-  async function undoItemChange() {
-    if (!confirm("Undo the last item change?")) return;
-    setUndoing("item");
-    const ok = await restoreSnapshot("item_change");
-    setUndoing(null);
-    if (ok) afterUndo();
-  }
-
-  async function undoSession() {
-    if (!confirm("Undo all changes made this session?")) return;
-    setUndoing("session");
-    const ok = await restoreSnapshot("session");
-    setUndoing(null);
-    if (ok) afterUndo();
-  }
-
-  async function undoCloseDay() {
-    if (!confirm("Undo the last Finalize? This will delete today's history snapshot and restore previous balances.")) return;
-    setUndoing("close_day");
-
-    const ok = await restoreSnapshot("close_day");
-    if (!ok) { setUndoing(null); return; }
-
-    const today = todayISO();
-    const { error: e1 } = await supabase
-      .from("finished_products_inventory_history")
-      .delete()
-      .eq("inventory_date", today);
-    const { error: e2 } = await supabase
-      .from("raw_materials_inventory_history")
-      .delete()
-      .eq("inventory_date", today);
-
-    if (e1 || e2) {
-      alert("Inventory restored but failed to clear history: " + (e1?.message || e2?.message));
-    }
-
-    setUndoing(null);
-    afterUndo();
-  }
-
-  async function loadData() {
     setLoading(true);
 
-    const isHistory = date !== "";
+    const { data: staticItems } = await supabase.from(staticTbl(isRaw)).select("*");
 
-    const { data: staticItems, error } = await supabase
-      .from(staticTable(isRaw))
-      .select("*");
-
-    if (error) console.error("staticItems error:", error);
-
-    const invTable = isHistory ? historyTable(isRaw) : inventoryTable(isRaw);
-    let query = supabase.from(invTable).select("*");
-    if (isHistory) query = query.eq("inventory_date", date);
+    let query = supabase.from(isHistory ? histTable(isRaw) : invTable(isRaw)).select("*");
+    if (isHistory) query = query.eq("inventory_date", chosenDate);
     const { data: inventoryItems } = await query;
 
     const invMap = {};
@@ -180,11 +105,10 @@ export default function InventoryPage() {
     if (!isHistory) {
       const { data: txRows } = await supabase
         .from(txTable(isRaw))
-        .select("inventory_id, incoming_bal, outgoing_bal");
-
+        .select("inventory_id, incoming_bal, outgoing_bal")
+        .is("finalized_at", null);
       (txRows || []).forEach(({ inventory_id, incoming_bal, outgoing_bal }) => {
-        if (!txTotals[inventory_id])
-          txTotals[inventory_id] = { incoming: 0, outgoing: 0 };
+        if (!txTotals[inventory_id]) txTotals[inventory_id] = { incoming: 0, outgoing: 0 };
         txTotals[inventory_id].incoming += Number(incoming_bal ?? 0);
         txTotals[inventory_id].outgoing += Number(outgoing_bal ?? 0);
       });
@@ -194,24 +118,16 @@ export default function InventoryPage() {
       const inv = invMap[s.id];
       const tx  = txTotals[s.id] ?? { incoming: 0, outgoing: 0 };
 
-      const beg_bal    = Number(inv?.beg_bal    ?? 0);
-      const actual_bal = Number(inv?.actual_bal ?? 0);
-      const loss       = Number(inv?.loss       ?? 0);
-
+      const beg_bal      = Number(inv?.beg_bal      ?? 0);
+      const actual_bal   = Number(inv?.actual_bal   ?? 0);
+      const loss         = Number(inv?.loss         ?? 0);
       const incoming_bal = Number(inv?.incoming_bal ?? 0) + tx.incoming;
       const outgoing_bal = Number(inv?.outgoing_bal ?? 0) + tx.outgoing;
       const current_bal  = beg_bal + incoming_bal - outgoing_bal;
 
       return {
-        id: s.id,
-        name: s.name,
-        category_id: s.category_id,
-        beg_bal,
-        incoming_bal,
-        outgoing_bal,
-        current_bal,
-        actual_bal,
-        loss,
+        id: s.id, name: s.name, category_id: s.category_id,
+        beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal, loss,
         _pendingIncoming: tx.incoming,
         _pendingOutgoing: tx.outgoing,
       };
@@ -221,16 +137,220 @@ export default function InventoryPage() {
     setLoading(false);
   }
 
+  // ── Snapshots ─────────────────────────────────────────────────────────────
+
+  async function saveSnapshot(undoType, whichTab) {
+    const isRaw = (whichTab ?? tabRef.current) === "raw";
+    const t     = whichTab ?? tabRef.current;
+    const { data: currentRows } = await supabase.from(invTable(isRaw)).select("*");
+    await supabase.from("undo_log").insert({
+      undo_type: undoType,
+      tab: t,
+      snapshot: currentRows || [],
+    });
+  }
+
+  async function saveCloseDaySnapshot(isRaw, whichTab, finalizedTxIds, historyDate) {
+    const { data: currentRows } = await supabase.from(invTable(isRaw)).select("*");
+    await supabase.from("undo_log").insert({
+      undo_type: "close_day",
+      tab: whichTab,
+      snapshot: {
+        inventory: currentRows || [],
+        finalizedTxIds,
+        historyDate,
+      },
+    });
+  }
+
+  async function restoreSnapshot(undoType, whichTab) {
+    const t     = whichTab ?? tabRef.current;
+    const isRaw = t === "raw";
+
+    const { data: logs } = await supabase
+      .from("undo_log").select("*")
+      .eq("tab", t).eq("undo_type", undoType)
+      .order("created_at", { ascending: false }).limit(1);
+
+    if (!logs || logs.length === 0) { alert("No undo snapshot found."); return false; }
+    const log = logs[0];
+
+    const inventoryRows = undoType === "close_day"
+      ? (log.snapshot?.inventory ?? [])
+      : (log.snapshot ?? []);
+
+    if (inventoryRows.length > 0) {
+      const { error } = await supabase
+        .from(invTable(isRaw))
+        .upsert(inventoryRows, { onConflict: "id" });
+      if (error) { alert("Restore failed: " + error.message); return false; }
+    }
+
+    // Delete log AFTER reading everything needed
+    await supabase.from("undo_log").delete().eq("id", log.id);
+
+    return { ok: true, snapshot: log.snapshot };
+  }
+
+  // ── Boot — runs exactly once ───────────────────────────────────────────────
+  // We capture the initial tab value in a local variable so nothing depends
+  // on ref or state timing.
+
+  useEffect(() => {
+    const initialTab = "finished"; // matches useState default
+    async function boot() {
+      await saveSnapshot("session", initialTab);
+      await Promise.all([
+        loadData(initialTab, ""),
+        checkUndoAvailability(initialTab),
+        checkFinalizedFor(initialTab),
+      ]);
+      setBooted(true);
+    }
+    boot();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── React to tab / date changes (skip the very first render = boot) ────────
+
+  useEffect(() => {
+    if (!booted) return;
+    // Capture current values into locals — they are the new committed values
+    // because React batches state updates and this effect fires after commit.
+    const t = tab;
+    const d = date;
+    loadData(t, d);
+    checkUndoAvailability(t);
+    checkFinalizedFor(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, date, booted]);
+
+  // ── Realtime subscriptions ────────────────────────────────────────────────
+
+  useEffect(() => {
+    const rawSub = supabase
+      .channel("raw-tx-live")
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "raw_materials_transaction_log" },
+        () => { if (isRawNow() && dateNow() === "") loadData("raw", ""); }
+      ).subscribe();
+
+    const finSub = supabase
+      .channel("fin-tx-live")
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "finished_products_transaction_log" },
+        () => { if (!isRawNow() && dateNow() === "") loadData("finished", ""); }
+      ).subscribe();
+
+    return () => {
+      supabase.removeChannel(rawSub);
+      supabase.removeChannel(finSub);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Undo actions ──────────────────────────────────────────────────────────
+
+  async function undoItemChange() {
+    if (!confirm("Undo the last item change?")) return;
+    const t = tabRef.current;
+    setUndoing("item");
+    const result = await restoreSnapshot("item_change", t);
+    setUndoing(null);
+    if (!result?.ok) return;
+    await loadData(t, dateRef.current);
+    await checkUndoAvailability(t);
+    await checkFinalizedFor(t);
+  }
+
+  async function undoSession() {
+    if (!confirm("Undo all changes made this session?")) return;
+    const t = tabRef.current;
+    setUndoing("session");
+    const result = await restoreSnapshot("session", t);
+    setUndoing(null);
+    if (!result?.ok) return;
+    await loadData(t, dateRef.current);
+    await checkUndoAvailability(t);
+    await checkFinalizedFor(t);
+  }
+
+  async function undoCloseDay() {
+    if (!confirm("Undo the last Finalize? Balances will be restored and today's orders will become pending again.")) return;
+
+    // Capture tab NOW before any async — so all operations below use same tab
+    const t     = tabRef.current;
+    const isRaw = t === "raw";
+
+    setUndoing("close_day");
+
+    const result = await restoreSnapshot("close_day", t);
+    if (!result?.ok) { setUndoing(null); return; }
+
+    const { finalizedTxIds = [], historyDate } = result.snapshot ?? {};
+    const dateToDelete = historyDate || todayLocal();
+
+    // Un-mark tx rows → pending again
+    if (finalizedTxIds.length > 0) {
+      const { error: unfinalizeError } = await supabase
+        .from(txTable(isRaw))
+        .update({ finalized_at: null })
+        .in("id", finalizedTxIds);
+      if (unfinalizeError) {
+        alert("Inventory restored but failed to un-finalize orders: " + unfinalizeError.message);
+        setUndoing(null);
+        return;
+      }
+    }
+
+    // Delete the history rows for that exact date
+    const { error: histError } = await supabase
+      .from(histTable(isRaw))
+      .delete()
+      .eq("inventory_date", dateToDelete);
+    if (histError) {
+      alert("Undo completed but failed to clear history: " + histError.message);
+    }
+
+    setUndoing(null);
+
+    // Reload everything — INCLUDING checkFinalizedFor with explicit tab
+    // Now that history rows are deleted, this will correctly return false
+    await Promise.all([
+      loadData(t, ""),
+      checkUndoAvailability(t),
+      checkFinalizedFor(t),       // ← always re-query after delete, don't shortcut
+    ]);
+
+    // Reset date to live view if user was on a history snapshot
+    if (dateRef.current !== "") setDate("");
+  }
+
+  // ── Finalize day ──────────────────────────────────────────────────────────
+
   async function finalizeDay() {
-    const tx  = txTable(isRaw);
-    const inv = inventoryTable(isRaw);
+    const t     = tabRef.current;
+    const isRaw = t === "raw";
+    const today = todayLocal();
+
+    // Guard: already finalized?
+    const { data: existingHistory } = await supabase
+      .from(histTable(isRaw))
+      .select("id")
+      .eq("inventory_date", today)
+      .limit(1);
+    if (existingHistory && existingHistory.length > 0) {
+      alert("Today has already been finalized.");
+      setAlreadyFinalized(true);
+      return;
+    }
 
     const { data: pendingRows, error: checkError } = await supabase
-      .from(tx).select("id").limit(1);
+      .from(txTable(isRaw)).select("id").is("finalized_at", null).limit(1);
     if (checkError) { alert("Could not check pending orders: " + checkError.message); return; }
 
     const hasPending = pendingRows && pendingRows.length > 0;
-    const confirmed = hasPending
+    const confirmed  = hasPending
       ? confirm("Finalize today's data and roll balances forward?")
       : confirm(
           "⚠️ No pending orders found for today.\n\n" +
@@ -239,72 +359,122 @@ export default function InventoryPage() {
         );
     if (!confirmed) return;
 
-    await saveSnapshot("close_day");
     setFinalizing(true);
 
     try {
+      // 1. Fetch all pending tx rows
       const { data: txRows, error: txFetchError } = await supabase
-        .from(tx)
-        .select("id, inventory_id, incoming_bal, outgoing_bal");
+        .from(txTable(isRaw))
+        .select("id, inventory_id, incoming_bal, outgoing_bal")
+        .is("finalized_at", null);
       if (txFetchError) throw txFetchError;
 
-      if (txRows && txRows.length > 0) {
-        const totals = {};
-        txRows.forEach(({ id, inventory_id, incoming_bal, outgoing_bal }) => {
-          if (!totals[inventory_id])
-            totals[inventory_id] = { incoming: 0, outgoing: 0, ids: [] };
-          totals[inventory_id].incoming += Number(incoming_bal ?? 0);
-          totals[inventory_id].outgoing += Number(outgoing_bal ?? 0);
-          totals[inventory_id].ids.push(id);
-        });
+      const finalizedTxIds = (txRows || []).map((r) => r.id);
 
-        const { data: currentRows, error: fetchError } = await supabase
-          .from(inv)
-          .select("id, name, beg_bal, incoming_bal, outgoing_bal, actual_bal, loss")
-          .in("id", Object.keys(totals));
-        if (fetchError) throw fetchError;
+      // 2. Fetch full inventory BEFORE mutations
+      const { data: allInvRows, error: allInvError } = await supabase
+        .from(invTable(isRaw)).select("*");
+      if (allInvError) throw allInvError;
 
-        const updates = (currentRows || []).map((row) => {
-          const t = totals[row.id];
-          const incoming_bal = Number(row.incoming_bal ?? 0) + t.incoming;
-          const outgoing_bal = Number(row.outgoing_bal ?? 0) + t.outgoing;
-          const current_bal  = Number(row.beg_bal      ?? 0) + incoming_bal - outgoing_bal;
-          const actual_bal   = Number(row.actual_bal ?? current_bal);
-          const loss         = Math.max(0, current_bal - actual_bal);
-          return { id: row.id, name: row.name, incoming_bal, outgoing_bal, current_bal, actual_bal, loss };
-        });
+      // 3. Save close_day snapshot BEFORE any writes
+      await saveCloseDaySnapshot(isRaw, t, finalizedTxIds, today);
 
-        const { error: deleteError } = await supabase
-          .from(tx).delete().in("id", txRows.map((r) => r.id));
-        if (deleteError) throw deleteError;
+      // 4. Compute updated balances
+      const totals = {};
+      (txRows || []).forEach(({ inventory_id, incoming_bal, outgoing_bal }) => {
+        if (!totals[inventory_id]) totals[inventory_id] = { incoming: 0, outgoing: 0 };
+        totals[inventory_id].incoming += Number(incoming_bal ?? 0);
+        totals[inventory_id].outgoing += Number(outgoing_bal ?? 0);
+      });
 
+      const finalInvRows = (allInvRows || []).map((row) => {
+        const t = totals[row.id];
+        if (!t) return row;
+        const incoming_bal = Number(row.incoming_bal ?? 0) + t.incoming;
+        const outgoing_bal = Number(row.outgoing_bal ?? 0) + t.outgoing;
+        const current_bal  = Number(row.beg_bal      ?? 0) + incoming_bal - outgoing_bal;
+        const actual_bal   = Number(row.actual_bal   ?? current_bal);
+        const loss         = Math.max(0, current_bal - actual_bal);
+        return { ...row, incoming_bal, outgoing_bal, current_bal, actual_bal, loss };
+      });
+
+      // 5. Write updated balances
+      if (finalInvRows.length > 0) {
         const { error: upsertError } = await supabase
-          .from(inv).upsert(updates, { onConflict: "id" });
+          .from(invTable(isRaw)).upsert(finalInvRows, { onConflict: "id" });
         if (upsertError) throw upsertError;
       }
 
-      const { error: rpcError } = await supabase.rpc("close_inventory_day");
-      if (rpcError) throw rpcError;
+      // 6. Write history rows — INSERT only, never upsert
+      //    If this throws (duplicate), the finalize is rejected cleanly
+      const historyRows = finalInvRows.map((row) => ({
+        inventory_id:   row.id,
+        inventory_date: today,
+        name:           row.name,
+        beg_bal:        row.beg_bal,
+        incoming_bal:   row.incoming_bal,
+        outgoing_bal:   row.outgoing_bal,
+        current_bal:    row.current_bal,
+        actual_bal:     row.actual_bal,
+        loss:           row.loss,
+      }));
+      const { error: histError } = await supabase
+        .from(histTable(isRaw))
+        .insert(historyRows);
+      if (histError) throw histError;
+
+      // 7. Mark tx rows as finalized
+      if (finalizedTxIds.length > 0) {
+        const { error: markError } = await supabase
+          .from(txTable(isRaw))
+          .update({ finalized_at: new Date().toISOString() })
+          .in("id", finalizedTxIds);
+        if (markError) throw markError;
+      }
+
+      // 8. Roll beg_bal forward for next day
+      const rolledRows = finalInvRows.map((row) => ({
+        id:           row.id,
+        name:         row.name,
+        beg_bal:      row.current_bal,
+        incoming_bal: 0,
+        outgoing_bal: 0,
+        current_bal:  row.current_bal,
+        actual_bal:   row.actual_bal,
+        loss:         row.loss,
+      }));
+      const { error: rollError } = await supabase
+        .from(invTable(isRaw)).upsert(rolledRows, { onConflict: "id" });
+      if (rollError) throw rollError;
+
+      // 9. Re-query to confirm — never trust optimistic state
+      await checkFinalizedFor(t);
+      await loadData(t, "");
+      await checkUndoAvailability(t);
 
       alert("Finalized. Balances rolled forward and history saved.");
-      setAlreadyFinalized(true);
-      loadData();
-      checkUndoAvailability();
     } catch (e) {
       alert("Failed to finalize: " + e.message);
+      // Re-check in case partial writes occurred
+      await checkFinalizedFor(t);
     } finally {
       setFinalizing(false);
     }
   }
 
+  // ── Manipulation ──────────────────────────────────────────────────────────
+
   function requestManipulationUpdate(updateFn) {
+    const t = tabRef.current;
     (async () => {
-      await saveSnapshot("item_change");
+      await saveSnapshot("item_change", t);
       await updateFn();
-      loadData();
-      checkUndoAvailability();
+      await loadData(t, dateRef.current);
+      await checkUndoAvailability(t);
     })();
   }
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
@@ -319,9 +489,7 @@ export default function InventoryPage() {
           <button
             onClick={() => setTab("finished")}
             className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              tab === "finished"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
+              tab === "finished" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
             }`}
           >
             Finished
@@ -329,9 +497,7 @@ export default function InventoryPage() {
           <button
             onClick={() => setTab("raw")}
             className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              tab === "raw"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
+              tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
             }`}
           >
             Raw

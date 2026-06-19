@@ -28,7 +28,7 @@ export default function InventoryTable({ items, loading, onSelect }) {
         {search && (
           <button
             onClick={() => setSearch("")}
-            className="text-black text-sm text-gray-400 hover:text-gray-600 transition-colors"
+            className=" text-sm text-gray-400 hover:text-gray-600 transition-colors"
           >
             Clear
           </button>

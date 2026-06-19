@@ -57,14 +57,17 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
         <button type="button" disabled={disabled}
           onClick={() => { if (!disabled) setOpen((p) => !p); setQuery(""); }}
           className={`w-full flex items-center justify-between rounded-md border px-3 py-1.5 text-sm text-left transition-colors ${
-            disabled ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
-                     : "bg-white border-gray-200 text-gray-800 hover:border-blue-400 focus:outline-none"
+            disabled
+              ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+              : "bg-white border-gray-200 text-gray-800 hover:border-blue-400 focus:outline-none"
           }`}>
           <span className={value ? "text-gray-800" : "text-gray-400"}>
             {value || placeholder || `Select ${label}…`}
           </span>
           <span className="flex items-center gap-1 ml-2 shrink-0">
-            {value && !disabled && <span onClick={clear} className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer px-1">✕</span>}
+            {value && !disabled && (
+              <span onClick={clear} className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer px-1">✕</span>
+            )}
             <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
           </span>
         </button>
@@ -72,14 +75,17 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
           <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg">
             <div className="p-2 border-b border-gray-100">
               <input autoFocus type="text" value={query} onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search…" className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                placeholder="Search…"
+                className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <ul className="max-h-48 overflow-y-auto">
               {filtered.length === 0
                 ? <li className="px-3 py-2 text-sm text-gray-400">No results</li>
                 : filtered.map((o) => (
                   <li key={o} onClick={() => select(o)}
-                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 hover:text-blue-700 transition-colors ${value === o ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-700"}`}>
+                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 hover:text-blue-700 transition-colors ${
+                      value === o ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-700"
+                    }`}>
                     {o}
                   </li>
                 ))}
@@ -89,55 +95,6 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
       </div>
     </div>
   );
-}
-
-// ── Inventory sync helpers ────────────────────────────────────────────────────
-// Every add / edit / delete in the Order Table immediately syncs to the
-// inventory row so that current_bal, loss etc. are always up to date.
-
-async function getInventoryTable(isRaw) {
-  return isRaw ? "raw_materials_inventory" : "finished_products_inventory";
-}
-
-async function recalcInventory(supabase, inventoryTable, inventoryId, txTable) {
-  // 1. Fetch the committed base row
-  const { data: inv } = await supabase
-    .from(inventoryTable)
-    .select("beg_bal, actual_bal, loss")
-    .eq("id", inventoryId)
-    .maybeSingle();
-
-  const beg_bal    = Number(inv?.beg_bal    ?? 0);
-  const actual_bal = inv?.actual_bal != null ? Number(inv.actual_bal) : null;
-
-  // 2. Sum ALL tx rows for this inventory item
-  const { data: txRows } = await supabase
-    .from(txTable)
-    .select("incoming_bal, outgoing_bal")
-    .eq("inventory_id", inventoryId);
-
-  let incoming_bal = 0;
-  let outgoing_bal = 0;
-  (txRows || []).forEach((r) => {
-    incoming_bal += Number(r.incoming_bal ?? 0);
-    outgoing_bal += Number(r.outgoing_bal ?? 0);
-  });
-
-  const current_bal = beg_bal + incoming_bal - outgoing_bal;
-
-  // 3. Loss = current - actual  (only if actual has been explicitly set)
-  const loss = actual_bal != null ? Math.max(0, current_bal - actual_bal) : 0;
-
-  // 4. Write back
-  await supabase.from(inventoryTable).upsert({
-    id: inventoryId,
-    beg_bal,
-    incoming_bal,
-    outgoing_bal,
-    current_bal,
-    actual_bal: actual_bal ?? current_bal,
-    loss,
-  }, { onConflict: "id" });
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
@@ -165,15 +122,27 @@ export default function OrderTable() {
   const [finishedProducts, setFinishedProducts]           = useState([]);
   const [productOptions, setProductOptions]               = useState([]);
 
-  const isRaw      = productType === PRODUCT_TYPE.RAW;
-  const isIncoming = stockType   === STOCK_TYPE.INCOMING;
+  // Derive these fresh from state — never used in async callbacks directly
+  // (async callbacks use refs below to avoid stale closures)
+  const isRaw        = productType === PRODUCT_TYPE.RAW;
+  const isIncoming   = stockType   === STOCK_TYPE.INCOMING;
   const showSupplier = isRaw && isIncoming;
 
-  const txTableName  = isRaw ? "raw_materials_transaction_log"    : "finished_products_transaction_log";
-  const invTableName = isRaw ? "raw_materials_inventory"          : "finished_products_inventory";
+  // Refs so async functions always see the latest productType/stockType
+  const productTypeRef = useRef(productType);
+  const stockTypeRef   = useRef(stockType);
+  useEffect(() => { productTypeRef.current = productType; }, [productType]);
+  useEffect(() => { stockTypeRef.current   = stockType;   }, [stockType]);
+
+  function currentIsRaw()      { return productTypeRef.current === PRODUCT_TYPE.RAW; }
+  function currentIsIncoming() { return stockTypeRef.current   === STOCK_TYPE.INCOMING; }
+  function currentTxTable()    { return currentIsRaw() ? "raw_materials_transaction_log" : "finished_products_transaction_log"; }
+  function currentInvTable()   { return currentIsRaw() ? "raw_materials_inventory"       : "finished_products_inventory"; }
 
   useEffect(() => { fetchOptions(); }, []);
   useEffect(() => { fetchRows(); resetForm(); }, [productType, stockType]);
+
+  // ── Options ───────────────────────────────────────────────────────────────
 
   async function fetchOptions() {
     const [mon, rep, sup, rawProd, finProd] = await Promise.all([
@@ -185,8 +154,9 @@ export default function OrderTable() {
     ]);
     setMonitoringOptions(mon.data?.map((r) => r.name) ?? []);
     setRepresentativeOptions(rep.data?.map((r) => r.name) ?? []);
-    setSupplierOptions((sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A"));
-
+    setSupplierOptions(
+      (sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A")
+    );
     const map = {};
     (rawProd.data ?? []).forEach(({ name, supplier_contact }) => {
       if (!supplier_contact || supplier_contact === "N/A") return;
@@ -194,19 +164,21 @@ export default function OrderTable() {
       map[supplier_contact].push(name);
     });
     setRawProductsBySupplier(map);
-
-    const fp = finProd.data?.map((r) => r.name) ?? [];
-    setFinishedProducts(fp);
+    setFinishedProducts(finProd.data?.map((r) => r.name) ?? []);
     setProductOptions(Object.values(map).flat());
   }
+
+  // ── Rows — only PENDING (finalized_at IS NULL) ───────────────────────────
+  // Finalized rows live in Transaction Logs, not here.
 
   async function fetchRows() {
     setLoading(true);
     setError(null);
     try {
       const { data, error: e } = await supabase
-        .from(txTableName)
+        .from(currentTxTable())
         .select("*")
+        .is("finalized_at", null)
         .order("created_at", { ascending: false });
       if (e) throw e;
       setRows(data ?? []);
@@ -217,6 +189,8 @@ export default function OrderTable() {
     }
   }
 
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
   function showSuccess(msg) {
     setSuccessMsg(msg);
     setTimeout(() => setSuccessMsg(null), 3000);
@@ -224,12 +198,14 @@ export default function OrderTable() {
 
   function allRawProducts() { return Object.values(rawProductsBySupplier).flat(); }
   function currentProductOptions() {
-    return productType === PRODUCT_TYPE.FINISHED ? finishedProducts : allRawProducts();
+    return productTypeRef.current === PRODUCT_TYPE.FINISHED ? finishedProducts : allRawProducts();
   }
 
   function resetForm() {
     setFormData(emptyForm());
-    setProductOptions(productType === PRODUCT_TYPE.FINISHED ? finishedProducts : allRawProducts());
+    setProductOptions(
+      productTypeRef.current === PRODUCT_TYPE.FINISHED ? finishedProducts : allRawProducts()
+    );
     setEditingId(null);
     setEditData({});
     setError(null);
@@ -238,30 +214,37 @@ export default function OrderTable() {
   }
 
   function handleSupplierChange(supplierName) {
-    setFormData((prev) => ({ ...prev, supplier_name: supplierName, product_name: "" }));
-    setProductOptions(supplierName ? (rawProductsBySupplier[supplierName] ?? []) : allRawProducts());
+    // Product list is independent of supplier now — picking a supplier
+    // no longer narrows or resets the chosen product.
+    setFormData((prev) => ({ ...prev, supplier_name: supplierName }));
   }
 
   async function resolveInventoryId(productName) {
+    // Always resolve from the correct table using the ref (not stale closure)
     const { data } = await supabase
-      .from(invTableName)
+      .from(currentInvTable())
       .select("id")
       .eq("name", productName)
       .single();
     return data?.id ?? null;
   }
 
-  // ── ADD — insert tx row then immediately sync inventory ───────────────────
+  // ── ADD ───────────────────────────────────────────────────────────────────
+  // Insert into tx log only. InventoryPage's Realtime subscription picks
+  // this up and re-runs loadData(), which overlays pending tx rows on top
+  // of the committed inventory — no direct inventory write needed here.
 
   async function handleAdd() {
     setError(null);
-    const qty = Number(isIncoming ? formData.incoming_bal : formData.outgoing_bal);
+    const isInc = currentIsIncoming();
+    const isR   = currentIsRaw();
+    const qty   = Number(isInc ? formData.incoming_bal : formData.outgoing_bal);
 
-    if (!formData.monitoring_employee)                    { setError("Select a monitoring employee."); return; }
-    if (!isIncoming && !formData.representative_employee) { setError("Select a representative employee."); return; }
-    if (isRaw && isIncoming && !formData.supplier_name)   { setError("Select a supplier."); return; }
-    if (!formData.product_name)                           { setError("Select a product."); return; }
-    if (!qty || qty <= 0)                                 { setError("Enter a valid quantity."); return; }
+    if (!formData.monitoring_employee)               { setError("Select a monitoring employee."); return; }
+    if (!isInc && !formData.representative_employee) { setError("Select a representative employee."); return; }
+    if (isR && isInc && !formData.supplier_name)     { setError("Select a supplier."); return; }
+    if (!formData.product_name)                      { setError("Select a product."); return; }
+    if (!qty || qty <= 0)                            { setError("Enter a valid quantity."); return; }
 
     setSaving(true);
     try {
@@ -270,23 +253,24 @@ export default function OrderTable() {
 
       const payload = {
         inventory_id,
-        monitoring_employee:      formData.monitoring_employee,
-        representative_employee:  isIncoming ? null : formData.representative_employee,
-        product_name:             formData.product_name,
-        incoming_bal:             isIncoming ? qty : 0,
-        outgoing_bal:             isIncoming ? 0 : qty,
-        ...(isRaw ? { supplier_name: isIncoming ? formData.supplier_name : null } : {}),
+        monitoring_employee:     formData.monitoring_employee,
+        representative_employee: isInc ? null : formData.representative_employee,
+        product_name:            formData.product_name,
+        incoming_bal:            isInc ? qty : 0,
+        outgoing_bal:            isInc ? 0 : qty,
+        // finalized_at: NULL by default — row is pending until finalizeDay()
+        ...(isR ? { supplier_name: isInc ? formData.supplier_name : null } : {}),
       };
 
-      const { error: insertError } = await supabase.from(txTableName).insert([payload]);
+      const { error: insertError } = await supabase.from(currentTxTable()).insert([payload]);
       if (insertError) throw insertError;
 
-      // ← Immediately sync inventory
-      await recalcInventory(supabase, invTableName, inventory_id, txTableName);
+      // No inventory write here — InventoryPage Realtime subscription
+      // re-runs loadData() which overlays the new pending row automatically.
 
       resetForm();
       await fetchRows();
-      showSuccess("Order added and inventory updated.");
+      showSuccess("Order added. Inventory preview updated automatically.");
     } catch (e) {
       setError(e.message);
     } finally {
@@ -294,7 +278,8 @@ export default function OrderTable() {
     }
   }
 
-  // ── EDIT SAVE — update tx row then re-sync both old and new inventory_id ──
+  // ── EDIT ──────────────────────────────────────────────────────────────────
+  // Update the tx log row only — same reason as ADD above.
 
   async function handleEditSave(id) {
     setError(null);
@@ -303,17 +288,16 @@ export default function OrderTable() {
       const newInventoryId = await resolveInventoryId(editData.product_name);
       if (!newInventoryId) throw new Error("Could not resolve inventory ID for that product.");
 
-      // Capture old inventory_id before overwriting (product may have changed)
-      const oldInventoryId = editData.inventory_id;
+      const isR = currentIsRaw();
 
       const updatePayload = {
-        inventory_id:             newInventoryId,
-        monitoring_employee:      editData.monitoring_employee,
-        representative_employee:  editData.representative_employee ?? null,
-        product_name:             editData.product_name,
-        incoming_bal:             Number(editData.incoming_bal ?? 0),
-        outgoing_bal:             Number(editData.outgoing_bal ?? 0),
-        ...(isRaw ? {
+        inventory_id:            newInventoryId,
+        monitoring_employee:     editData.monitoring_employee,
+        representative_employee: editData.representative_employee ?? null,
+        product_name:            editData.product_name,
+        incoming_bal:            Number(editData.incoming_bal ?? 0),
+        outgoing_bal:            Number(editData.outgoing_bal ?? 0),
+        ...(isR ? {
           supplier_name: Number(editData.incoming_bal ?? 0) > 0
             ? (editData.supplier_name || null)
             : null,
@@ -321,18 +305,14 @@ export default function OrderTable() {
       };
 
       const { error: updateError } = await supabase
-        .from(txTableName).update(updatePayload).eq("id", id);
+        .from(currentTxTable()).update(updatePayload).eq("id", id);
       if (updateError) throw updateError;
 
-      // Re-sync both inventory rows (old product and new product if changed)
-      await recalcInventory(supabase, invTableName, newInventoryId, txTableName);
-      if (oldInventoryId && oldInventoryId !== newInventoryId) {
-        await recalcInventory(supabase, invTableName, oldInventoryId, txTableName);
-      }
+      // No inventory write — Realtime handles the live update.
 
       setEditingId(null);
       await fetchRows();
-      showSuccess("Order updated and inventory synced.");
+      showSuccess("Order updated. Inventory preview refreshed.");
     } catch (e) {
       setError(e.message);
     } finally {
@@ -340,27 +320,22 @@ export default function OrderTable() {
     }
   }
 
-  // ── DELETE — remove tx row then re-sync inventory ─────────────────────────
+  // ── DELETE ────────────────────────────────────────────────────────────────
+  // Remove the pending tx row — Realtime will update the inventory preview.
 
   async function confirmDelete() {
     const id = deleteTarget;
     setDeleteTarget(null);
     setError(null);
     try {
-      // Get inventory_id before deleting
-      const row = rows.find((r) => r.id === id);
-      const inventory_id = row?.inventory_id;
-
-      const { error: deleteError } = await supabase.from(txTableName).delete().eq("id", id);
+      const { error: deleteError } = await supabase
+        .from(currentTxTable()).delete().eq("id", id);
       if (deleteError) throw deleteError;
 
-      // Re-sync inventory after removal
-      if (inventory_id) {
-        await recalcInventory(supabase, invTableName, inventory_id, txTableName);
-      }
+      // No inventory write — Realtime handles live update.
 
       await fetchRows();
-      showSuccess("Order deleted and inventory updated.");
+      showSuccess("Order deleted. Inventory preview updated.");
     } catch (e) {
       setError(e.message);
     }
@@ -380,7 +355,7 @@ export default function OrderTable() {
 
       {deleteTarget && (
         <ConfirmModal
-          message="Delete this order? Inventory will be updated immediately."
+          message="Delete this order? The inventory preview will update automatically."
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}
         />
@@ -390,14 +365,13 @@ export default function OrderTable() {
       <div className="mb-5">
         <h1 className="text-xl font-semibold text-gray-900">Order Table</h1>
         <p className="text-sm text-gray-500 mt-0.5">
-          Orders update inventory in real-time — no need to close day first.
+          Pending orders — applied to inventory permanently on Finalize Day.
         </p>
       </div>
 
       {/* Control bar */}
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
 
-        {/* Product type tabs */}
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button
             onClick={() => setProductType(PRODUCT_TYPE.RAW)}
@@ -417,10 +391,8 @@ export default function OrderTable() {
           </button>
         </div>
 
-        {/* Divider */}
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
 
-        {/* Stock type tabs */}
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button
             onClick={() => setStockType(STOCK_TYPE.INCOMING)}
@@ -463,41 +435,61 @@ export default function OrderTable() {
         </h2>
 
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          <SearchableSelect label="Monitoring" value={formData.monitoring_employee} options={monitoringOptions}
-            onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))} />
+
+          <SearchableSelect
+            label="Monitoring"
+            value={formData.monitoring_employee}
+            options={monitoringOptions}
+            onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))}
+          />
 
           {!isIncoming && (
-            <SearchableSelect label="Representative" value={formData.representative_employee} options={representativeOptions}
-              onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))} />
+            <SearchableSelect
+              label="Representative"
+              value={formData.representative_employee}
+              options={representativeOptions}
+              onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))}
+            />
           )}
 
           {showSupplier && (
-            <SearchableSelect label="Supplier" value={formData.supplier_name} options={supplierOptions}
-              onChange={handleSupplierChange} />
+            <SearchableSelect
+              label="Supplier"
+              value={formData.supplier_name}
+              options={supplierOptions}
+              onChange={handleSupplierChange}
+            />
           )}
 
-          <SearchableSelect label="Product" value={formData.product_name} options={productOptions}
-            disabled={isRaw && isIncoming && !formData.supplier_name}
-            placeholder={isRaw && isIncoming && !formData.supplier_name ? "Select a supplier first…" : undefined}
-            onChange={(v) => setFormData((p) => ({ ...p, product_name: v }))} />
+          <SearchableSelect
+            label="Product"
+            value={formData.product_name}
+            options={productOptions}
+            onChange={(v) => setFormData((p) => ({ ...p, product_name: v }))}
+          />
 
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
               {isIncoming ? "Incoming Qty" : "Outgoing Qty"}
             </label>
-            <input type="number" min="0" placeholder="0"
-              className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            <input
+              type="number" min="0" placeholder="0"
+              className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
               value={isIncoming ? formData.incoming_bal : formData.outgoing_bal}
               onChange={(e) => setFormData((p) => ({
                 ...p,
                 [isIncoming ? "incoming_bal" : "outgoing_bal"]: e.target.value,
-              }))} />
+              }))}
+            />
           </div>
         </div>
 
         <div className="mt-4 flex justify-end">
-          <button onClick={handleAdd} disabled={saving}
-            className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60">
+          <button
+            onClick={handleAdd}
+            disabled={saving}
+            className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60"
+          >
             {saving ? "Saving…" : "Add Order"}
           </button>
         </div>
@@ -506,14 +498,13 @@ export default function OrderTable() {
       {/* Table */}
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
         <div className="flex items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
-          <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
+          <input
+            type="text" value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Search products…"
-            className="w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            className="w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          />
           {search && (
-            <button
-              onClick={() => setSearch("")}
-              className="text-sm text-gray-400 hover:text-gray-600 transition-colors"
-            >
+            <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">
               Clear
             </button>
           )}
@@ -529,7 +520,9 @@ export default function OrderTable() {
             <div className="px-4 py-4 text-sm text-gray-400">Loading…</div>
           ) : filteredRows.length === 0 ? (
             <div className="px-4 py-8 text-sm text-gray-400 text-center">
-              {search ? `No orders matching "${search}"` : `No ${stockType} orders found.`}
+              {search
+                ? `No orders matching "${search}"`
+                : `No ${stockType} orders found.`}
             </div>
           ) : (
             <table className="w-full text-sm min-w-[900px]">
@@ -549,11 +542,13 @@ export default function OrderTable() {
                   const isEditing = editingId === row.id;
                   return (
                     <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+
                       <td className="px-4 py-3 min-w-[160px]">
                         {isEditing
                           ? <SearchableSelect value={editData.monitoring_employee} options={monitoringOptions} onChange={(v) => handleEditChange("monitoring_employee", v)} />
                           : <span className="text-gray-700">{row.monitoring_employee}</span>}
                       </td>
+
                       {!isIncoming && (
                         <td className="px-4 py-3 min-w-[160px]">
                           {isEditing
@@ -561,6 +556,7 @@ export default function OrderTable() {
                             : <span className="text-gray-700">{row.representative_employee}</span>}
                         </td>
                       )}
+
                       {showSupplier && (
                         <td className="px-4 py-3 min-w-[160px]">
                           {isEditing
@@ -568,26 +564,39 @@ export default function OrderTable() {
                             : <span className="text-gray-700">{row.supplier_name}</span>}
                         </td>
                       )}
+
                       <td className="px-4 py-3 font-medium text-gray-900 min-w-[160px]">
                         {isEditing
                           ? <SearchableSelect value={editData.product_name} options={currentProductOptions()} onChange={(v) => handleEditChange("product_name", v)} />
                           : row.product_name}
                       </td>
+
                       <td className="px-4 py-3">
                         {isEditing ? (
-                          <input type="number" min="0"
-                            className="w-full rounded-md border border-gray-200 px-2 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          <input
+                            type="number" min="0"
+                            className="w-full rounded-md border border-gray-200 px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
                             value={isIncoming ? editData.incoming_bal : editData.outgoing_bal}
-                            onChange={(e) => handleEditChange(isIncoming ? "incoming_bal" : "outgoing_bal", e.target.value)} />
+                            onChange={(e) => handleEditChange(
+                              isIncoming ? "incoming_bal" : "outgoing_bal",
+                              e.target.value
+                            )}
+                          />
                         ) : (
-                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${isIncoming ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"}`}>
+                          <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
+                            isIncoming ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
+                          }`}>
                             {isIncoming ? row.incoming_bal : row.outgoing_bal}
                           </span>
                         )}
                       </td>
+
                       <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
-                        {new Date(row.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                        {new Date(row.created_at).toLocaleDateString(undefined, {
+                          year: "numeric", month: "short", day: "numeric",
+                        })}
                       </td>
+
                       <td className="px-4 py-3">
                         {isEditing ? (
                           <div className="inline-flex items-center gap-1">
@@ -601,6 +610,7 @@ export default function OrderTable() {
                           </div>
                         )}
                       </td>
+
                     </tr>
                   );
                 })}
