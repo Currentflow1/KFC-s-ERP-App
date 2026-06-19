@@ -221,12 +221,22 @@ export default function OrderTable() {
 
   async function resolveInventoryId(productName) {
     // Always resolve from the correct table using the ref (not stale closure)
-    const { data } = await supabase
-      .from(currentInvTable())
+    const table = currentInvTable();
+    const { data, error } = await supabase
+      .from(table)
       .select("id")
-      .eq("name", productName)
-      .single();
-    return data?.id ?? null;
+      .eq("name", productName);
+
+    if (error) {
+      throw new Error(`Lookup failed on ${table} for "${productName}": ${error.message}`);
+    }
+    if (!data || data.length === 0) {
+      throw new Error(`No inventory row found in ${table} with name = "${productName}". Check for typos, trailing spaces, or a missing row.`);
+    }
+    if (data.length > 1) {
+      throw new Error(`Found ${data.length} inventory rows in ${table} with name = "${productName}" — name should be unique.`);
+    }
+    return data[0].id;
   }
 
   // ── ADD ───────────────────────────────────────────────────────────────────
@@ -249,7 +259,13 @@ export default function OrderTable() {
     setSaving(true);
     try {
       const inventory_id = await resolveInventoryId(formData.product_name);
-      if (!inventory_id) throw new Error("Could not resolve inventory ID for that product.");
+
+      // Resolve the logged-in account so "Account Responsible" on the
+      // Transaction Logs page can show who placed this order. There's also
+      // a DB-level default of auth.uid() on created_by as a backstop, but
+      // setting it explicitly here keeps it visible in app logic.
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+      if (userError) throw userError;
 
       const payload = {
         inventory_id,
@@ -258,6 +274,7 @@ export default function OrderTable() {
         product_name:            formData.product_name,
         incoming_bal:            isInc ? qty : 0,
         outgoing_bal:            isInc ? 0 : qty,
+        created_by:               userData?.user?.id ?? null,
         // finalized_at: NULL by default — row is pending until finalizeDay()
         ...(isR ? { supplier_name: isInc ? formData.supplier_name : null } : {}),
       };
@@ -279,14 +296,15 @@ export default function OrderTable() {
   }
 
   // ── EDIT ──────────────────────────────────────────────────────────────────
-  // Update the tx log row only — same reason as ADD above.
+  // Update the tx log row only — same reason as ADD above. created_by is
+  // intentionally left untouched here, since it should always reflect who
+  // originally placed the order, not who last edited it.
 
   async function handleEditSave(id) {
     setError(null);
     setSaving(true);
     try {
       const newInventoryId = await resolveInventoryId(editData.product_name);
-      if (!newInventoryId) throw new Error("Could not resolve inventory ID for that product.");
 
       const isR = currentIsRaw();
 

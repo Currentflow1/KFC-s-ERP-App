@@ -6,8 +6,10 @@ import TransactionCalendar from "./components/TransactionalCalendar";
 
 const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
 
-const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, created_at";
-const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, created_at";
+// created_by — used to look up the responsible account's email via profiles
+// finalized_at — drives the Status badge (Pending vs Finalized) per row
+const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, created_at, created_by, finalized_at";
+const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, created_at, created_by, finalized_at";
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -38,6 +40,22 @@ export default function TransactionLogsTable() {
 
       if (fetchError) throw fetchError;
 
+      // ── Resolve responsible-account emails ────────────────────────────
+      // created_by only stores a uuid (auth.users.id). Batch-fetch matching
+      // profiles in one query and build a lookup map, rather than joining
+      // per-row (profiles is a public table; auth.users is not queryable
+      // from the client).
+      const responsibleIds = [...new Set((data ?? []).map((r) => r.created_by).filter(Boolean))];
+      let emailById = {};
+      if (responsibleIds.length > 0) {
+        const { data: profileRows, error: profileError } = await supabase
+          .from("profiles")
+          .select("id, email")
+          .in("id", responsibleIds);
+        if (profileError) throw profileError;
+        emailById = Object.fromEntries((profileRows ?? []).map((p) => [p.id, p.email]));
+      }
+
       const runningBalance = {};
       const enriched = (data ?? []).map((row) => {
         const product = row.product_name;
@@ -45,7 +63,12 @@ export default function TransactionLogsTable() {
         const delta   = (row.incoming_bal ?? 0) - (row.outgoing_bal ?? 0);
         const after   = before + delta;
         runningBalance[product] = after;
-        return { ...row, balance_before: before, balance_after: after };
+        return {
+          ...row,
+          balance_before: before,
+          balance_after: after,
+          responsible_email: row.created_by ? (emailById[row.created_by] ?? "Unknown account") : null,
+        };
       });
 
       setLogs(enriched.reverse());
@@ -77,6 +100,9 @@ export default function TransactionLogsTable() {
   }
 
   const filteredLogs = logs.filter((r) => {
+    // Date filter — rows are never deleted on Finalize (only flagged via
+    // finalized_at), so filtering this same live table by date is enough
+    // to browse history; no separate archive table needed.
     if (selectedDate) {
       const rowDate = toDateString(new Date(r.created_at));
       if (rowDate !== selectedDate) return false;
@@ -91,6 +117,7 @@ export default function TransactionLogsTable() {
       r.monitoring_employee,
       r.representative_employee,
       r.supplier_name ?? null,
+      r.responsible_email ?? null,
       stockType,
       qty != null ? String(qty) : null,
       String(r.balance_before),
@@ -108,7 +135,9 @@ export default function TransactionLogsTable() {
       <div className="mb-5 flex justify-between items-start">
         <div>
           <h1 className="text-xl font-semibold text-gray-900">Transaction Logs</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Full audit trail of every stock movement</p>
+          <p className="text-sm text-gray-500 mt-0.5">
+            Full audit trail of every stock movement — pick a date on the calendar to jump to a finalized day.
+          </p>
         </div>
         <button
           onClick={fetchLogs}
@@ -142,7 +171,7 @@ export default function TransactionLogsTable() {
 
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
 
-        {/* Same calendar function as Inventory/Dashboard — now applied to transactions */}
+        {/* Same calendar visual language as Inventory — dots mark finalized days */}
         <TransactionCalendar
           productType={productType}
           date={selectedDate}
@@ -199,7 +228,7 @@ export default function TransactionLogsTable() {
                   : "No results for that search."}
             </div>
           ) : (
-            <table className="w-full text-sm min-w-[1100px]">
+            <table className="w-full text-sm min-w-[1350px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Type</th>
@@ -210,7 +239,9 @@ export default function TransactionLogsTable() {
                   {isRaw && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Account Responsible</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Date & Time</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -297,11 +328,33 @@ export default function TransactionLogsTable() {
                         }
                       </td>
 
+                      {/* Account Responsible — the logged-in user (auth.uid()) who created this row */}
+                      <td className="px-4 py-3">
+                        {row.responsible_email
+                          ? <span className="text-xs text-gray-600 font-mono">{row.responsible_email}</span>
+                          : <span className="text-gray-300">—</span>}
+                      </td>
+
                       <td className="px-4 py-3">
                         <div className="flex flex-col">
                           <span className="text-xs font-semibold text-gray-700">{date}</span>
                           <span className="text-xs text-gray-400">{time}</span>
                         </div>
+                      </td>
+
+                      {/* Status — reflects finalized_at, set by InventoryPage's finalizeDay() */}
+                      <td className="px-4 py-3">
+                        {row.finalized_at ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">
+                            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+                            Finalized
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-50 text-amber-700">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                            Pending
+                          </span>
+                        )}
                       </td>
 
                     </tr>
