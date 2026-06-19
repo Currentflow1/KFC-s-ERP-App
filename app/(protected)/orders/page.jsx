@@ -274,7 +274,8 @@ export default function OrderTable() {
         product_name:            formData.product_name,
         incoming_bal:            isInc ? qty : 0,
         outgoing_bal:            isInc ? 0 : qty,
-        created_by:               userData?.user?.id ?? null,
+        created_by:              userData?.user?.id ?? null,
+        transaction_source:      "ordered",
         // finalized_at: NULL by default — row is pending until finalizeDay()
         ...(isR ? { supplier_name: isInc ? formData.supplier_name : null } : {}),
       };
@@ -299,6 +300,8 @@ export default function OrderTable() {
   // Update the tx log row only — same reason as ADD above. created_by is
   // intentionally left untouched here, since it should always reflect who
   // originally placed the order, not who last edited it.
+  // transaction_source is also intentionally left untouched — editing an
+  // order doesn't change what kind of transaction it was.
 
   async function handleEditSave(id) {
     setError(null);

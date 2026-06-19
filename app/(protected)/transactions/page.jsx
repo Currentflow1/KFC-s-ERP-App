@@ -8,8 +8,9 @@ const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
 
 // created_by — used to look up the responsible account's email via profiles
 // finalized_at — drives the Status badge (Pending vs Finalized) per row
-const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, created_at, created_by, finalized_at";
-const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, created_at, created_by, finalized_at";
+// transaction_source — distinguishes "ordered" (Order Table) from "manipulated" (ManipulatePanel)
+const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, created_at, created_by, finalized_at, transaction_source";
+const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, created_at, created_by, finalized_at, transaction_source";
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -112,6 +113,7 @@ export default function TransactionLogsTable() {
     const { date, time } = formatDateTime(r.created_at);
     const stockType = getStockType(r);
     const qty = stockType === "incoming" ? r.incoming_bal : stockType === "outgoing" ? r.outgoing_bal : null;
+    const source = r.transaction_source ?? "ordered";
     return [
       r.product_name,
       r.monitoring_employee,
@@ -119,6 +121,7 @@ export default function TransactionLogsTable() {
       r.supplier_name ?? null,
       r.responsible_email ?? null,
       stockType,
+      source,
       qty != null ? String(qty) : null,
       String(r.balance_before),
       String(r.balance_after),
@@ -198,7 +201,7 @@ export default function TransactionLogsTable() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search products…"
+            placeholder="Search products, source…"
             className="text-black w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {search && (
@@ -228,9 +231,10 @@ export default function TransactionLogsTable() {
                   : "No results for that search."}
             </div>
           ) : (
-            <table className="w-full text-sm min-w-[1350px]">
+            <table className="w-full text-sm min-w-[1450px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Source</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Type</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Product</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Qty Changed</th>
@@ -251,9 +255,23 @@ export default function TransactionLogsTable() {
                   const isIncoming = stockType === "incoming";
                   const isOutgoing = stockType === "outgoing";
                   const qty = isIncoming ? row.incoming_bal : isOutgoing ? row.outgoing_bal : null;
+                  const isManipulated = (row.transaction_source ?? "ordered") === "manipulated";
 
                   return (
                     <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+
+                      {/* Source — "Ordered" (normal Order Table flow) vs "Manipulated" (admin direct edit) */}
+                      <td className="px-4 py-3">
+                        {isManipulated ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200">
+                            ⚙ Manipulated
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
+                            📋 Ordered
+                          </span>
+                        )}
+                      </td>
 
                       <td className="px-4 py-3">
                         {isIncoming && <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">↓ Incoming</span>}

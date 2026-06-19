@@ -175,15 +175,35 @@ export default function InventoryPage() {
     if (!logs || logs.length === 0) { alert("No undo snapshot found."); return false; }
     const log = logs[0];
 
-    const inventoryRows = undoType === "close_day"
-      ? (log.snapshot?.inventory ?? [])
-      : (log.snapshot ?? []);
+    // Snapshot shapes by undo_type:
+    //  - close_day:    { inventory, finalizedTxIds, historyDate }
+    //  - item_change:  { inventory, txInsertedId } (new) — or a flat array
+    //                  (snapshots saved before this tx-tracking was added)
+    //  - session:      flat array (boot-time snapshot, never tx-tracked)
+    const inventoryRows = Array.isArray(log.snapshot)
+      ? log.snapshot
+      : (log.snapshot?.inventory ?? []);
 
     if (inventoryRows.length > 0) {
       const { error } = await supabase
         .from(invTable(isRaw))
         .upsert(inventoryRows, { onConflict: "id" });
       if (error) { alert("Restore failed: " + error.message); return false; }
+    }
+
+    // If this item_change undo created a transaction log row as a side
+    // effect (a manual +IN/-OUT adjustment from ManipulatePanel), remove it
+    // too — otherwise it lingers as a ghost entry in Transaction Logs after
+    // the balance change it represents has been reverted.
+    const txInsertedId = undoType === "item_change" ? log.snapshot?.txInsertedId : null;
+    if (txInsertedId) {
+      const { error: txDeleteError } = await supabase
+        .from(txTable(isRaw))
+        .delete()
+        .eq("id", txInsertedId);
+      if (txDeleteError) {
+        alert("Inventory restored, but failed to remove the related transaction log entry: " + txDeleteError.message);
+      }
     }
 
     // Delete log AFTER reading everything needed
@@ -463,12 +483,34 @@ export default function InventoryPage() {
   }
 
   // ── Manipulation ──────────────────────────────────────────────────────────
+  // updateFn (from ManipulatePanel) may return the id of a transaction log
+  // row it inserted as a side effect (e.g. a manual +IN/-OUT adjustment).
+  // When present, we attach it to the item_change undo entry we just saved,
+  // so "Undo Item" can delete that tx row too — not just revert balances.
 
   function requestManipulationUpdate(updateFn) {
     const t = tabRef.current;
     (async () => {
       await saveSnapshot("item_change", t);
-      await updateFn();
+      const insertedTxId = await updateFn();
+
+      if (insertedTxId) {
+        const { data: latestLog } = await supabase
+          .from("undo_log")
+          .select("id, snapshot")
+          .eq("tab", t).eq("undo_type", "item_change")
+          .order("created_at", { ascending: false })
+          .limit(1);
+
+        if (latestLog && latestLog.length > 0) {
+          const log = latestLog[0];
+          await supabase
+            .from("undo_log")
+            .update({ snapshot: { inventory: log.snapshot, txInsertedId: insertedTxId } })
+            .eq("id", log.id);
+        }
+      }
+
       await loadData(t, dateRef.current);
       await checkUndoAvailability(t);
     })();

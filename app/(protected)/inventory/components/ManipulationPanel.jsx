@@ -10,26 +10,40 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   const [actual, setActual] = useState("");
   const [saving, setSaving] = useState(false);
   const [role, setRole]     = useState(null); // null = loading
+  const [userId, setUserId] = useState(null);
 
-  // Fetch role once on mount
+  // Monitoring employee — required by the transaction log schema
+  // (monitoring_employee is NOT NULL with a FK into monitoring_employee.name)
+  const [monitoringOptions, setMonitoringOptions]     = useState([]);
+  const [monitoringEmployee, setMonitoringEmployee]   = useState("");
+  const [txError, setTxError]                         = useState(null);
+
+  // Fetch role, current user, and monitoring-employee options once on mount
   useEffect(() => {
-    async function fetchRole() {
+    async function init() {
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setRole("staff"); return; }
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("role")
-        .eq("id", user.id)
-        .single();
+      setUserId(user.id);
+
+      const [{ data: profile }, { data: monRows }] = await Promise.all([
+        supabase.from("profiles").select("role").eq("id", user.id).single(),
+        supabase.from("monitoring_employee").select("name"),
+      ]);
+
       setRole(profile?.role ?? "staff");
+      setMonitoringOptions((monRows ?? []).map((r) => r.name));
     }
-    fetchRole();
+    init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const table = tab === "finished"
     ? "finished_products_inventory"
     : "raw_materials_inventory";
+
+  const txTable = tab === "finished"
+    ? "finished_products_transaction_log"
+    : "raw_materials_transaction_log";
 
   const displayedCurrent = Number(item.current_bal ?? 0);
   const pendingIn        = Number(item._pendingIncoming ?? 0);
@@ -38,13 +52,22 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   async function applyChange(mode) {
     const q = Number(qty || 0);
     if (!q) { setQty(""); return; }
+    if (!monitoringEmployee) {
+      setTxError("Select a monitoring employee before applying a change.");
+      return;
+    }
+    setTxError(null);
     setSaving(true);
+
+    // The closure below returns the inserted transaction-log row's id (or
+    // null) — InventoryPage's requestManipulationUpdate uses that to attach
+    // the tx row to this undo entry, so "Undo Item" can clean it up too.
     await onUpdated(async () => {
       const { data, error: fetchError } = await supabase
         .from(table).select("*").eq("id", item.id).maybeSingle();
       if (fetchError || !data) {
         alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
-        return;
+        return null;
       }
       const beg    = Number(data.beg_bal     ?? 0);
       let incoming = Number(data.incoming_bal ?? 0);
@@ -55,13 +78,47 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
       const existing_actual = data.actual_bal != null ? Number(data.actual_bal) : null;
       const actual_bal      = existing_actual ?? current_bal;
       const loss            = existing_actual != null ? Math.max(0, current_bal - existing_actual) : 0;
+
       const { error } = await supabase.from(table).upsert({
         id: item.id, name: item.name,
         beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing,
         current_bal, actual_bal, loss,
       });
-      if (error) alert("Update failed: " + error.message);
+      if (error) { alert("Update failed: " + error.message); return null; }
+
+      // Mirror this adjustment into the transaction log so it shows up in
+      // Transaction Logs (audit trail, Account Responsible, calendar
+      // history). finalized_at is set immediately — the balance change
+      // above is already committed directly to the inventory table, so
+      // this row must never be summed again as "pending" during the next
+      // Finalize Day.
+      //
+      // transaction_source: "manipulated" distinguishes this from a normal
+      // order placed via the Order Table ("ordered").
+      const { data: txRow, error: txInsertError } = await supabase
+        .from(txTable)
+        .insert({
+          inventory_id:        item.id,
+          monitoring_employee: monitoringEmployee,
+          representative_employee: null,
+          product_name:        item.name,
+          incoming_bal:        mode === "in"  ? q : 0,
+          outgoing_bal:        mode === "out" ? q : 0,
+          finalized_at:        new Date().toISOString(),
+          created_by:          userId,
+          transaction_source:  "manipulated",
+        })
+        .select("id")
+        .single();
+
+      if (txInsertError) {
+        alert("Inventory updated, but failed to log the transaction: " + txInsertError.message);
+        return null;
+      }
+
+      return txRow?.id ?? null;
     });
+
     setSaving(false);
     setQty("");
   }
@@ -74,7 +131,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         .from(table).select("*").eq("id", item.id).maybeSingle();
       if (fetchError || !data) {
         alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
-        return;
+        return null;
       }
       const a    = Number(actual);
       const loss = Math.max(0, displayedCurrent - a);
@@ -87,6 +144,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         actual_bal: a, loss,
       });
       if (error) alert("Update failed: " + error.message);
+      // Not mirrored to the transaction log — this is a count correction,
+      // not a stock movement. Your schema's inventory_ledger table looks
+      // purpose-built for auditing this kind of field-level change if you
+      // want that later.
+      return null;
     });
     setSaving(false);
     setActual("");
@@ -158,6 +220,29 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
           {pendingIn  > 0 && <div>↓ Incoming: +{pendingIn}</div>}
           {pendingOut > 0 && <div>↑ Outgoing: −{pendingOut}</div>}
         </div>
+      )}
+
+      <div className="mb-2">
+        <label className="text-xs font-medium uppercase tracking-wide text-gray-500 block mb-1">
+          Monitoring employee
+        </label>
+        <select
+          value={monitoringEmployee}
+          onChange={(e) => { setMonitoringEmployee(e.target.value); setTxError(null); }}
+          className="border p-2 w-full rounded text-sm text-gray-900 bg-white"
+        >
+          <option value="">Select…</option>
+          {monitoringOptions.map((name) => (
+            <option key={name} value={name}>{name}</option>
+          ))}
+        </select>
+        <p className="text-[11px] text-gray-400 mt-1">
+          Required for +IN / −OUT — attributed in the Transaction Logs audit trail.
+        </p>
+      </div>
+
+      {txError && (
+        <p className="text-xs text-red-500 mb-2">{txError}</p>
       )}
 
       <input
