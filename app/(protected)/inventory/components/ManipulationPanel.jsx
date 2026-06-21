@@ -2,113 +2,166 @@
 
 import { useState, useEffect } from "react";
 import { createClient } from "@/lib/supabaseClient";
+import {
+  writeInventory,
+  queueTxLog,
+  setCache,
+  getCache,
+  patchInventorySnapshot,
+} from "@/lib/sync";
 
-export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
+function isOnline() {
+  return typeof navigator === "undefined" ? true : navigator.onLine;
+}
+
+export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocalPatch }) {
   const supabase = createClient();
 
-  const [qty, setQty]       = useState("");
+  const [qty,    setQty]    = useState("");
   const [actual, setActual] = useState("");
   const [saving, setSaving] = useState(false);
-  const [role, setRole]     = useState(null); // null = loading
-  const [userId, setUserId] = useState(null);
 
-  const [monitoringOptions, setMonitoringOptions]   = useState([]);
+  const [role,               setRole]               = useState(null);
+  const [userId,             setUserId]             = useState(null);
+  const [offlineMode,        setOfflineMode]        = useState(false);
+  const [monitoringOptions,  setMonitoringOptions]  = useState([]);
   const [monitoringEmployee, setMonitoringEmployee] = useState("");
-  const [txError, setTxError]                       = useState(null);
+  const [txError,            setTxError]            = useState(null);
 
-  useEffect(() => {
-    async function init() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setRole("staff"); return; }
-      setUserId(user.id);
+  const table       = tab === "finished" ? "finished_products_inventory"      : "raw_materials_inventory";
+  const txLogTable  = tab === "finished" ? "finished_products_transaction_log" : "raw_materials_transaction_log";
+  const snapshotKey = tab === "finished" ? "finished"                          : "raw";
 
-      const [{ data: profile }, { data: monRows }] = await Promise.all([
-        supabase.from("profiles").select("role").eq("id", user.id).single(),
-        supabase.from("monitoring_employee").select("name"),
-      ]);
-
-      setRole(profile?.role ?? "staff");
-      setMonitoringOptions((monRows ?? []).map((r) => r.name));
-    }
-    init();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const table = tab === "finished"
-    ? "finished_products_inventory"
-    : "raw_materials_inventory";
-
-  const txTable = tab === "finished"
-    ? "finished_products_transaction_log"
-    : "raw_materials_transaction_log";
-
-  const displayedCurrent = Number(item.current_bal ?? 0);
+  const displayedCurrent = Number(item.current_bal     ?? 0);
   const pendingIn        = Number(item._pendingIncoming ?? 0);
   const pendingOut       = Number(item._pendingOutgoing ?? 0);
 
+  // ── Permission init ───────────────────────────────────────────────────────
+  // Online: fetch live, write to cache.
+  // Offline or fetch fails: read from cache so the panel never hangs.
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFromCache() {
+      const [r, u, m] = await Promise.all([
+        getCache("role"),
+        getCache("userId"),
+        getCache("monitoringOptions"),
+      ]);
+      if (cancelled) return;
+      setRole(r ?? "staff");
+      setUserId(u ?? null);
+      setMonitoringOptions(m ?? []);
+      setOfflineMode(true);
+    }
+
+    async function init() {
+      if (!isOnline()) { await loadFromCache(); return; }
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) { if (!cancelled) setRole("staff"); return; }
+        if (cancelled) return;
+        setUserId(user.id);
+        await setCache("userId", user.id);
+
+        const [{ data: profile }, { data: monRows }] = await Promise.all([
+          supabase.from("profiles").select("role").eq("id", user.id).single(),
+          supabase.from("monitoring_employee").select("name"),
+        ]);
+        if (cancelled) return;
+
+        const resolvedRole = profile?.role ?? "staff";
+        const monNames     = (monRows ?? []).map((r) => r.name);
+        setRole(resolvedRole);
+        setMonitoringOptions(monNames);
+        await setCache("role",              resolvedRole);
+        await setCache("monitoringOptions", monNames);
+      } catch (e) {
+        console.error("[ManipulatePanel] live fetch failed, using cache:", e);
+        await loadFromCache();
+      }
+    }
+
+    init();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Shared tx log payload builder ─────────────────────────────────────────
+
+  function buildTxPayload({ mode, q, actual_bal, loss, txType }) {
+    return {
+      inventory_id:            item.id,
+      monitoring_employee:     monitoringEmployee,
+      representative_employee: null,
+      product_name:            item.name,
+      incoming_bal:            txType === "stock_movement" && mode === "in"  ? q : 0,
+      outgoing_bal:            txType === "stock_movement" && mode === "out" ? q : 0,
+      finalized_at:            new Date().toISOString(),
+      created_by:              userId,
+      transaction_source:      "manipulated",
+      transaction_type:        txType,
+      actual_bal,
+      loss,
+    };
+  }
+
   // ── +IN / −OUT ────────────────────────────────────────────────────────────
-  // Logs a "stock_movement" tx row with actual_bal + loss snapshotted.
 
   async function applyChange(mode) {
     const q = Number(qty || 0);
     if (!q) { setQty(""); return; }
-    if (!monitoringEmployee) {
-      setTxError("Select a monitoring employee before applying a change.");
-      return;
-    }
+    if (!monitoringEmployee) { setTxError("Select a monitoring employee."); return; }
     setTxError(null);
     setSaving(true);
 
     await onUpdated(async () => {
-      const { data, error: fetchError } = await supabase
-        .from(table).select("*").eq("id", item.id).maybeSingle();
-      if (fetchError || !data) {
-        alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
-        return null;
+      const online = isOnline();
+
+      // ── compute new balances ───────────────────────────────────────────
+      let beg, incoming, outgoing, existing_actual;
+      if (online) {
+        const { data, error } = await supabase
+          .from(table).select("*").eq("id", item.id).maybeSingle();
+        if (error || !data) { alert("Failed to fetch current values."); return null; }
+        beg             = Number(data.beg_bal      ?? 0);
+        incoming        = Number(data.incoming_bal  ?? 0);
+        outgoing        = Number(data.outgoing_bal  ?? 0);
+        existing_actual = data.actual_bal != null ? Number(data.actual_bal) : null;
+      } else {
+        beg             = Number(item.beg_bal      ?? 0);
+        incoming        = Number(item.incoming_bal  ?? 0);
+        outgoing        = Number(item.outgoing_bal  ?? 0);
+        existing_actual = item.actual_bal != null ? Number(item.actual_bal) : null;
       }
 
-      const beg    = Number(data.beg_bal     ?? 0);
-      let incoming = Number(data.incoming_bal ?? 0);
-      let outgoing = Number(data.outgoing_bal ?? 0);
       if (mode === "in")  incoming += q;
       if (mode === "out") outgoing += q;
 
-      const current_bal     = beg + incoming - outgoing;
-      const existing_actual = data.actual_bal != null ? Number(data.actual_bal) : null;
-      const actual_bal      = existing_actual ?? current_bal;
-      const loss            = existing_actual != null ? Math.max(0, current_bal - existing_actual) : 0;
+      const current_bal = beg + incoming - outgoing;
+      const actual_bal  = existing_actual ?? current_bal;
+      const loss        = existing_actual != null ? Math.max(0, current_bal - existing_actual) : 0;
 
-      const { error } = await supabase.from(table).upsert({
-        id: item.id, name: item.name,
-        beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing,
-        current_bal, actual_bal, loss,
-      });
-      if (error) { alert("Update failed: " + error.message); return null; }
+      const invPayload = { id: item.id, name: item.name, beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing, current_bal, actual_bal, loss };
+      const txPayload  = buildTxPayload({ mode, q, actual_bal, loss, txType: "stock_movement" });
 
-      const { data: txRow, error: txInsertError } = await supabase
-        .from(txTable)
-        .insert({
-          inventory_id:            item.id,
-          monitoring_employee:     monitoringEmployee,
-          representative_employee: null,
-          product_name:            item.name,
-          incoming_bal:            mode === "in"  ? q : 0,
-          outgoing_bal:            mode === "out" ? q : 0,
-          finalized_at:            new Date().toISOString(),
-          created_by:              userId,
-          transaction_source:      "manipulated",
-          transaction_type:        "stock_movement",
-          actual_bal,
-          loss,
-        })
-        .select("id")
-        .single();
+      // ── write ─────────────────────────────────────────────────────────
+      const synced = await writeInventory(table, item.id, invPayload);
 
-      if (txInsertError) {
-        alert("Inventory updated, but failed to log the transaction: " + txInsertError.message);
+      if (!synced) {
+        // Offline: queue tx log, patch snapshot and local state immediately
+        await queueTxLog(txLogTable, txPayload);
+        const patch = { beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing, current_bal, actual_bal, loss };
+        await patchInventorySnapshot(snapshotKey, item.id, patch);
+        onLocalPatch?.(item.id, patch);
         return null;
       }
 
+      // Online: insert tx log live
+      const { data: txRow, error: txErr } = await supabase
+        .from(txLogTable).insert(txPayload).select("id").single();
+      if (txErr) { alert("Inventory updated but tx log failed: " + txErr.message); return null; }
       return txRow?.id ?? null;
     });
 
@@ -117,69 +170,50 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
   }
 
   // ── Set actual count ──────────────────────────────────────────────────────
-  // Logs a "count_correction" tx row. No stock moved so incoming/outgoing
-  // are both 0 — the Type column in Transaction Logs will show a distinct
-  // "Count Correction" badge instead of ↓ Incoming / ↑ Outgoing.
 
   async function setActualValue() {
     if (actual === "") return;
-    if (!monitoringEmployee) {
-      setTxError("Select a monitoring employee before setting an actual count.");
-      return;
-    }
+    if (!monitoringEmployee) { setTxError("Select a monitoring employee."); return; }
     setTxError(null);
     setSaving(true);
 
     await onUpdated(async () => {
-      const { data, error: fetchError } = await supabase
-        .from(table).select("*").eq("id", item.id).maybeSingle();
-      if (fetchError || !data) {
-        alert("Failed to load current values: " + (fetchError?.message ?? "No data"));
+      const online = isOnline();
+      const a      = Number(actual);
+
+      let current_bal, beg_bal, incoming_bal, outgoing_bal;
+      if (online) {
+        const { data, error } = await supabase
+          .from(table).select("*").eq("id", item.id).maybeSingle();
+        if (error || !data) { alert("Failed to fetch current values."); return null; }
+        beg_bal      = Number(data.beg_bal      ?? 0);
+        incoming_bal = Number(data.incoming_bal  ?? 0);
+        outgoing_bal = Number(data.outgoing_bal  ?? 0);
+        current_bal  = Number(data.current_bal   ?? 0);
+      } else {
+        beg_bal      = Number(item.beg_bal      ?? 0);
+        incoming_bal = Number(item.incoming_bal  ?? 0);
+        outgoing_bal = Number(item.outgoing_bal  ?? 0);
+        current_bal  = Number(item.current_bal   ?? 0);
+      }
+
+      const loss       = Math.max(0, current_bal - a);
+      const invPayload = { id: item.id, name: item.name, beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal: a, loss };
+      const txPayload  = buildTxPayload({ mode: null, q: 0, actual_bal: a, loss, txType: "count_correction" });
+
+      const synced = await writeInventory(table, item.id, invPayload);
+
+      if (!synced) {
+        await queueTxLog(txLogTable, txPayload);
+        const patch = { current_bal, actual_bal: a, loss };
+        await patchInventorySnapshot(snapshotKey, item.id, patch);
+        onLocalPatch?.(item.id, patch);
         return null;
       }
 
-      const a           = Number(actual);
-      const current_bal = Number(data.current_bal ?? 0);
-      const loss        = Math.max(0, current_bal - a);
-
-      const { error } = await supabase.from(table).upsert({
-        id: item.id, name: item.name,
-        beg_bal:      Number(data.beg_bal      ?? 0),
-        incoming_bal: Number(data.incoming_bal  ?? 0),
-        outgoing_bal: Number(data.outgoing_bal  ?? 0),
-        current_bal,
-        actual_bal:   a,
-        loss,
-      });
-      if (error) { alert("Update failed: " + error.message); return null; }
-
-      // Log the count correction as its own tx row so it appears in
-      // Transaction Logs with a "Count Correction" badge. incoming/outgoing
-      // are 0 because no stock moved — only the actual count changed.
-      const { data: txRow, error: txInsertError } = await supabase
-        .from(txTable)
-        .insert({
-          inventory_id:            item.id,
-          monitoring_employee:     monitoringEmployee,
-          representative_employee: null,
-          product_name:            item.name,
-          incoming_bal:            0,
-          outgoing_bal:            0,
-          finalized_at:            new Date().toISOString(),
-          created_by:              userId,
-          transaction_source:      "manipulated",
-          transaction_type:        "count_correction",
-          actual_bal:              a,
-          loss,
-        })
-        .select("id")
-        .single();
-
-      if (txInsertError) {
-        alert("Inventory updated, but failed to log the count correction: " + txInsertError.message);
-        return null;
-      }
-
+      const { data: txRow, error: txErr } = await supabase
+        .from(txLogTable).insert(txPayload).select("id").single();
+      if (txErr) { alert("Inventory updated but tx log failed: " + txErr.message); return null; }
       return txRow?.id ?? null;
     });
 
@@ -187,9 +221,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
     setActual("");
   }
 
-  const lossPreview = actual !== ""
-    ? Math.max(0, displayedCurrent - Number(actual))
-    : null;
+  const lossPreview = actual !== "" ? Math.max(0, displayedCurrent - Number(actual)) : null;
 
   // ── Loading ───────────────────────────────────────────────────────────────
 
@@ -205,7 +237,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
     );
   }
 
-  // ── Staff: blocked ────────────────────────────────────────────────────────
+  // ── Staff blocked ─────────────────────────────────────────────────────────
 
   if (role !== "admin") {
     return (
@@ -223,7 +255,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
     );
   }
 
-  // ── Admin: full panel ─────────────────────────────────────────────────────
+  // ── Admin panel ───────────────────────────────────────────────────────────
 
   return (
     <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10">
@@ -232,6 +264,13 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
       </div>
 
+      {offlineMode && (
+        <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+          <span className="font-semibold">Offline mode</span> — using cached permissions. Changes sync when wifi returns.
+        </div>
+      )}
+
+      {/* Stats */}
       <div className="grid grid-cols-3 gap-2 mb-3 text-center text-xs">
         <div className="bg-gray-50 rounded p-2">
           <div className="text-gray-400 mb-0.5">Current</div>
@@ -247,6 +286,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         </div>
       </div>
 
+      {/* Pending orders */}
       {(pendingIn > 0 || pendingOut > 0) && (
         <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
           <div className="font-semibold mb-0.5">Pending orders (not yet closed)</div>
@@ -255,7 +295,8 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
         </div>
       )}
 
-      <div className="mb-2">
+      {/* Monitoring employee */}
+      <div className="mb-3">
         <label className="text-xs font-medium uppercase tracking-wide text-gray-500 block mb-1">
           Monitoring employee
         </label>
@@ -265,46 +306,33 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
           className="border p-2 w-full rounded text-sm text-gray-900 bg-white"
         >
           <option value="">Select…</option>
-          {monitoringOptions.map((name) => (
-            <option key={name} value={name}>{name}</option>
-          ))}
+          {monitoringOptions.map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
-        <p className="text-[11px] text-gray-400 mt-1">
-          Required for all actions — attributed in the Transaction Logs audit trail.
-        </p>
+        <p className="text-[11px] text-gray-400 mt-1">Required — attributed in Transaction Logs.</p>
       </div>
 
-      {txError && (
-        <p className="text-xs text-red-500 mb-2">{txError}</p>
-      )}
+      {txError && <p className="text-xs text-red-500 mb-2">{txError}</p>}
 
-      {/* +IN / −OUT */}
+      {/* IN / OUT */}
       <input
         value={qty}
         onChange={(e) => setQty(e.target.value)}
         placeholder="Quantity"
-        type="number"
-        min="0"
+        type="number" min="0"
         className="border p-2 w-full mb-2 rounded text-sm text-gray-900"
       />
       <div className="flex gap-2 mb-4">
-        <button
-          onClick={() => applyChange("in")}
-          disabled={saving}
-          className="bg-green-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50"
-        >
+        <button onClick={() => applyChange("in")} disabled={saving}
+          className="bg-green-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50">
           + IN
         </button>
-        <button
-          onClick={() => applyChange("out")}
-          disabled={saving}
-          className="bg-red-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50"
-        >
+        <button onClick={() => applyChange("out")} disabled={saving}
+          className="bg-red-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50">
           − OUT
         </button>
       </div>
 
-      {/* Set actual count */}
+      {/* Actual count */}
       <div className="border-t border-gray-100 pt-3">
         <label className="text-xs font-medium uppercase tracking-wide text-gray-500 block mb-1">
           Set actual count
@@ -313,8 +341,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
           value={actual}
           onChange={(e) => setActual(e.target.value)}
           placeholder="Actual count"
-          type="number"
-          min="0"
+          type="number" min="0"
           className="border p-2 w-full mb-2 rounded text-sm text-gray-900"
         />
         {lossPreview !== null && (
@@ -322,11 +349,8 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated }) {
             Loss preview: {lossPreview}{lossPreview === 0 ? " (no loss)" : ""}
           </p>
         )}
-        <button
-          onClick={setActualValue}
-          disabled={saving}
-          className="bg-purple-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50"
-        >
+        <button onClick={setActualValue} disabled={saving}
+          className="bg-purple-600 text-white w-full py-1.5 rounded text-sm disabled:opacity-50">
           {saving ? "Saving…" : "Update actual"}
         </button>
       </div>

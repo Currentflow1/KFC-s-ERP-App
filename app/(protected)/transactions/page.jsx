@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabaseClient";
 import TransactionCalendar from "./components/TransactionalCalendar";
 
@@ -8,9 +8,12 @@ const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
 
 // transaction_source — "ordered" | "manipulated"
 // transaction_type   — "stock_movement" | "count_correction"
+// removed_at / removed_reason — set when a row is soft-removed instead of
+//   hard-deleted: 'deleted' (Order Table Delete) or 'undone' (Inventory
+//   Undo Item / Undo Session). NULL means still active.
 // actual_bal / loss  — populated on all "manipulated" rows
-const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, transaction_source, transaction_type";
-const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, transaction_source, transaction_type";
+const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
+const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -25,6 +28,42 @@ export default function TransactionLogsTable() {
   const [search, setSearch]             = useState("");
   const [selectedDate, setSelectedDate] = useState("");
 
+  // ── Top scrollbar sync ───────────────────────────────────────────────────
+  // A thin scrollbar pinned above the table, mirroring the table's actual
+  // horizontal scroll — so wide tables can be scrolled without having to
+  // first scroll down to reach the bottom scrollbar.
+  const topScrollRef   = useRef(null);
+  const tableScrollRef = useRef(null);
+  const [tableWidth, setTableWidth] = useState(0);
+  const syncingRef = useRef(false); // guards against feedback loop between the two scroll handlers
+
+  function handleTopScroll() {
+    if (syncingRef.current) { syncingRef.current = false; return; }
+    if (!topScrollRef.current || !tableScrollRef.current) return;
+    syncingRef.current = true;
+    tableScrollRef.current.scrollLeft = topScrollRef.current.scrollLeft;
+  }
+
+  function handleTableScroll() {
+    if (syncingRef.current) { syncingRef.current = false; return; }
+    if (!topScrollRef.current || !tableScrollRef.current) return;
+    syncingRef.current = true;
+    topScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
+  }
+
+  // Keep the dummy top-scrollbar's inner width matched to the real table's
+  // scrollWidth, so its thumb is proportionally sized correctly.
+  useEffect(() => {
+    function measure() {
+      if (tableScrollRef.current) {
+        setTableWidth(tableScrollRef.current.scrollWidth);
+      }
+    }
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }); // no dep array — re-measures after every render (logs/columns can change width)
+
   const isRaw = productType === PRODUCT_TYPE.RAW;
 
   const fetchLogs = useCallback(async () => {
@@ -36,8 +75,7 @@ export default function TransactionLogsTable() {
       const { data, error: fetchError } = await supabase
         .from(table)
         .select(select)
-        .order("product_name", { ascending: true })
-        .order("created_at",   { ascending: true });
+        .order("created_at", { ascending: true });
 
       if (fetchError) throw fetchError;
 
@@ -53,13 +91,29 @@ export default function TransactionLogsTable() {
         emailById = Object.fromEntries((profileRows ?? []).map((p) => [p.id, p.email]));
       }
 
-      // Running balance per product (oldest → newest, then reversed for display)
+      // Running balance per product — IMPORTANT: only active rows (not
+      // removed) should count toward the running balance. A deleted or
+      // undone row never actually affected inventory, so including it here
+      // would make balance_before/balance_after wrong for every row after it.
       const runningBalance = {};
       const enriched = (data ?? []).map((row) => {
-        const product = row.product_name;
-        const before  = runningBalance[product] ?? 0;
-        const delta   = (row.incoming_bal ?? 0) - (row.outgoing_bal ?? 0);
-        const after   = before + delta;
+        const product   = row.product_name;
+        const isRemoved = !!row.removed_at;
+        const before     = runningBalance[product] ?? 0;
+
+        if (isRemoved) {
+          // Removed rows don't move the running balance — before === after,
+          // both equal to whatever the balance was at that point.
+          return {
+            ...row,
+            balance_before:    before,
+            balance_after:     before,
+            responsible_email: row.created_by ? (emailById[row.created_by] ?? "Unknown account") : null,
+          };
+        }
+
+        const delta = (row.incoming_bal ?? 0) - (row.outgoing_bal ?? 0);
+        const after = before + delta;
         runningBalance[product] = after;
         return {
           ...row,
@@ -83,6 +137,22 @@ export default function TransactionLogsTable() {
     setSelectedDate("");
   }, [fetchLogs]);
 
+  // ── Realtime ─────────────────────────────────────────────────────────────
+  // Keeps the table in sync the instant a row is soft-removed (deleted via
+  // Order Table, or undone via Inventory) or finalized — re-fetches so the
+  // running balance recalculation and status badges stay correct.
+  useEffect(() => {
+    const table = isRaw ? "raw_materials_transaction_log" : "finished_products_transaction_log";
+    const sub = supabase
+      .channel(`tx-log-live-${table}`)
+      .on("postgres_changes", { event: "*", schema: "public", table }, () => {
+        fetchLogs();
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(sub); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRaw]);
+
   function formatDateTime(isoString) {
     const date = new Date(isoString);
     return {
@@ -92,14 +162,25 @@ export default function TransactionLogsTable() {
   }
 
   // ── Stock type helper ─────────────────────────────────────────────────────
-  // count_correction rows have 0/0 incoming/outgoing — treat them as "none"
-  // so the Type cell renders the Count Correction badge instead.
 
   function getStockType(row) {
     if ((row.transaction_type ?? "stock_movement") === "count_correction") return "none";
     if ((row.incoming_bal ?? 0) > 0) return "incoming";
     if ((row.outgoing_bal ?? 0) > 0) return "outgoing";
     return "none";
+  }
+
+  // ── Status helper ─────────────────────────────────────────────────────────
+  // Priority: removed (deleted/undone) > finalized > pending.
+  // A row can't be both finalized and removed (undo/delete only ever touch
+  // rows that are still finalized_at IS NULL), so this ordering is safe.
+
+  function getStatus(row) {
+    if (row.removed_at) {
+      return row.removed_reason === "deleted" ? "deleted" : "undone";
+    }
+    if (row.finalized_at) return "finalized";
+    return "pending";
   }
 
   const filteredLogs = logs.filter((r) => {
@@ -114,6 +195,7 @@ export default function TransactionLogsTable() {
     const qty           = stockType === "incoming" ? r.incoming_bal : stockType === "outgoing" ? r.outgoing_bal : null;
     const source        = r.transaction_source ?? "ordered";
     const txType        = r.transaction_type   ?? "stock_movement";
+    const status         = getStatus(r);
     const isManipulated = source === "manipulated";
     return [
       r.product_name,
@@ -124,6 +206,7 @@ export default function TransactionLogsTable() {
       stockType,
       source,
       txType,
+      status,
       qty != null ? String(qty) : null,
       isManipulated && r.actual_bal != null ? String(r.actual_bal) : null,
       isManipulated && r.loss      != null ? String(r.loss)       : null,
@@ -204,7 +287,7 @@ export default function TransactionLogsTable() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search products, source, type…"
+            placeholder="Search products, source, type, status…"
             className="text-black w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {search && (
@@ -222,7 +305,24 @@ export default function TransactionLogsTable() {
           )}
         </div>
 
-        <div className="overflow-x-auto">
+        {/* Top scrollbar — mirrors the table's horizontal scroll so you
+            don't have to scroll down to the bottom edge to scroll sideways */}
+        {!loading && filteredLogs.length > 0 && (
+          <div
+            ref={topScrollRef}
+            onScroll={handleTopScroll}
+            className="overflow-x-auto overflow-y-hidden border-b border-gray-200"
+            style={{ height: 14 }}
+          >
+            <div style={{ width: tableWidth, height: 1 }} />
+          </div>
+        )}
+
+        <div
+          ref={tableScrollRef}
+          onScroll={handleTableScroll}
+          className="overflow-x-auto"
+        >
           {loading ? (
             <div className="px-4 py-4 text-sm text-gray-400">Loading…</div>
           ) : filteredLogs.length === 0 ? (
@@ -262,44 +362,57 @@ export default function TransactionLogsTable() {
                   const isCorrection   = (row.transaction_type ?? "stock_movement") === "count_correction";
                   const isManipulated  = (row.transaction_source ?? "ordered") === "manipulated";
                   const qty            = isIncoming ? row.incoming_bal : isOutgoing ? row.outgoing_bal : null;
+                  const status         = getStatus(row);
+                  const isRemoved      = status === "deleted" || status === "undone";
 
                   return (
-                    <tr key={row.id} className={`hover:bg-gray-50 transition-colors ${isCorrection ? "bg-purple-50/30" : ""}`}>
+                    <tr
+                      key={row.id}
+                      className={`hover:bg-gray-50 transition-colors ${
+                        isCorrection ? "bg-purple-50/30" : isRemoved ? "bg-gray-50/60" : ""
+                      }`}
+                    >
 
                       {/* Source */}
                       <td className="px-4 py-3">
-                        {isManipulated ? (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200">
-                            ⚙ Manipulated
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
-                            📋 Ordered
-                          </span>
-                        )}
+                        <span className={isRemoved ? "opacity-50" : ""}>
+                          {isManipulated ? (
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 border border-purple-200">
+                              ⚙ Manipulated
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-blue-50 text-blue-700 border border-blue-200">
+                              📋 Ordered
+                            </span>
+                          )}
+                        </span>
                       </td>
 
-                      {/* Type — stock movement direction OR count correction badge */}
+                      {/* Type */}
                       <td className="px-4 py-3">
-                        {isCorrection ? (
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 border border-purple-200">
-                            🔢 Count Correction
-                          </span>
-                        ) : isIncoming ? (
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">↓ Incoming</span>
-                        ) : isOutgoing ? (
-                          <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-700">↑ Outgoing</span>
-                        ) : (
-                          <span className="text-xs text-gray-400">—</span>
-                        )}
+                        <span className={isRemoved ? "opacity-50" : ""}>
+                          {isCorrection ? (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-100 text-purple-800 border border-purple-200">
+                              🔢 Count Correction
+                            </span>
+                          ) : isIncoming ? (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">↓ Incoming</span>
+                          ) : isOutgoing ? (
+                            <span className="text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-700">↑ Outgoing</span>
+                          ) : (
+                            <span className="text-xs text-gray-400">—</span>
+                          )}
+                        </span>
                       </td>
 
-                      <td className="px-4 py-3 font-medium text-gray-900">{row.product_name}</td>
+                      <td className={`px-4 py-3 font-medium text-gray-900 ${isRemoved ? "line-through opacity-50" : ""}`}>
+                        {row.product_name}
+                      </td>
 
-                      {/* Qty changed — blank for count corrections since no stock moved */}
+                      {/* Qty changed */}
                       <td className="px-4 py-3">
                         {!isCorrection && qty != null ? (
-                          <span className={`font-semibold ${isIncoming ? "text-green-600" : "text-red-600"}`}>
+                          <span className={`font-semibold ${isRemoved ? "opacity-50 line-through" : isIncoming ? "text-green-600" : "text-red-600"}`}>
                             {isIncoming ? `+${qty}` : `-${qty}`}
                           </span>
                         ) : (
@@ -309,15 +422,18 @@ export default function TransactionLogsTable() {
 
                       {/* Balance before */}
                       <td className="px-4 py-3">
-                        <span className="font-mono text-xs bg-gray-100 px-2 py-0.5 rounded-md text-gray-600">
+                        <span className={`font-mono text-xs bg-gray-100 px-2 py-0.5 rounded-md text-gray-600 ${isRemoved ? "opacity-50" : ""}`}>
                           {row.balance_before}
                         </span>
                       </td>
 
-                      {/* Balance after — count corrections don't change the balance */}
+                      {/* Balance after — removed rows never moved the balance,
+                          so before === after; shown plainly with a dash-like style */}
                       <td className="px-4 py-3">
-                        {isCorrection ? (
-                          <span className="text-gray-300 text-xs">—</span>
+                        {isCorrection || isRemoved ? (
+                          <span className="text-gray-300 text-xs">
+                            {isRemoved ? "— (not applied)" : "—"}
+                          </span>
                         ) : (
                           <div className="flex items-center gap-1.5">
                             <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md ${
@@ -337,10 +453,10 @@ export default function TransactionLogsTable() {
                         )}
                       </td>
 
-                      {/* Actual count — only on manipulated rows */}
+                      {/* Actual count */}
                       <td className="px-4 py-3">
                         {isManipulated && row.actual_bal != null ? (
-                          <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700">
+                          <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 ${isRemoved ? "opacity-50" : ""}`}>
                             {row.actual_bal}
                           </span>
                         ) : (
@@ -348,15 +464,15 @@ export default function TransactionLogsTable() {
                         )}
                       </td>
 
-                      {/* Loss — only on manipulated rows */}
+                      {/* Loss */}
                       <td className="px-4 py-3">
                         {isManipulated && row.loss != null ? (
                           row.loss > 0 ? (
-                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-600">
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-600 ${isRemoved ? "opacity-50" : ""}`}>
                               -{row.loss}
                             </span>
                           ) : (
-                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-600">
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-600 ${isRemoved ? "opacity-50" : ""}`}>
                               0
                             </span>
                           )
@@ -366,14 +482,14 @@ export default function TransactionLogsTable() {
                       </td>
 
                       {isRaw && (
-                        <td className="px-4 py-3 text-gray-600">
+                        <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50" : ""}`}>
                           {row.supplier_name ?? <span className="text-gray-300">—</span>}
                         </td>
                       )}
 
                       {/* Monitoring */}
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-1.5">
+                        <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50" : ""}`}>
                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">
                             {row.monitoring_employee?.[0]?.toUpperCase() ?? "?"}
                           </span>
@@ -384,7 +500,7 @@ export default function TransactionLogsTable() {
                       {/* Representative */}
                       <td className="px-4 py-3">
                         {row.representative_employee ? (
-                          <div className="flex items-center gap-1.5">
+                          <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50" : ""}`}>
                             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700">
                               {row.representative_employee[0].toUpperCase()}
                             </span>
@@ -398,29 +514,48 @@ export default function TransactionLogsTable() {
                       {/* Account responsible */}
                       <td className="px-4 py-3">
                         {row.responsible_email
-                          ? <span className="text-xs text-gray-600 font-mono">{row.responsible_email}</span>
+                          ? <span className={`text-xs text-gray-600 font-mono ${isRemoved ? "opacity-50" : ""}`}>{row.responsible_email}</span>
                           : <span className="text-gray-300">—</span>}
                       </td>
 
                       {/* Date & time */}
                       <td className="px-4 py-3">
-                        <div className="flex flex-col">
+                        <div className={`flex flex-col ${isRemoved ? "opacity-50" : ""}`}>
                           <span className="text-xs font-semibold text-gray-700">{date}</span>
                           <span className="text-xs text-gray-400">{time}</span>
                         </div>
                       </td>
 
-                      {/* Status */}
+                      {/* Status — now 4 states: pending / finalized / deleted / undone */}
                       <td className="px-4 py-3">
-                        {row.finalized_at ? (
+                        {status === "finalized" && (
                           <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">
                             <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
                             Finalized
                           </span>
-                        ) : (
+                        )}
+                        {status === "pending" && (
                           <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-amber-50 text-amber-700">
                             <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
                             Pending
+                          </span>
+                        )}
+                        {status === "deleted" && (
+                          <span
+                            className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-700"
+                            title={row.removed_at ? `Deleted ${formatDateTime(row.removed_at).date} ${formatDateTime(row.removed_at).time}` : undefined}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                            Deleted
+                          </span>
+                        )}
+                        {status === "undone" && (
+                          <span
+                            className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-gray-100 text-gray-600 border border-gray-200"
+                            title={row.removed_at ? `Undone ${formatDateTime(row.removed_at).date} ${formatDateTime(row.removed_at).time}` : undefined}
+                          >
+                            <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                            ↩ Undone
                           </span>
                         )}
                       </td>
