@@ -17,6 +17,7 @@ export default function Sidebar() {
     }, {
       label: "Operations",
       links: [
+        { label: "Records",     href: "/records",     symbol: "🎥" },
         { label: "Inventory",     href: "/inventory",     symbol: "📋" },
         { label: "Orders",        href: "/orders",        symbol: "🛒" },
         { label: "Transactions",  href: "/transactions",  symbol: "🔄" },

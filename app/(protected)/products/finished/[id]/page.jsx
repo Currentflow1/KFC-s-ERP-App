@@ -35,10 +35,11 @@ export default function EditFinishedProduct({ params }) {
       .from("finished_products_static")
       .update({
         name:                form.name,
-        category_name:       form.category_name,   // ← fixed
+        category_name:       form.category_name,
         quantity_per_unit:   Number(form.quantity_per_unit),
         unit_of_measurement: form.unit_of_measurement,
         discontinued:        form.discontinued,
+        warehouse:           form.warehouse || null,
       })
       .eq("id", id);
 
@@ -54,41 +55,25 @@ export default function EditFinishedProduct({ params }) {
         <h1 className="text-black text-xl font-bold mb-6">Edit Finished Product</h1>
         <div className="space-y-4">
 
-          <input
-            name="name"
-            value={form.name || ""}
-            onChange={handleChange}
-            placeholder="Name"
-            className="text-black w-full border rounded-lg p-2"
-          />
+          <input name="name" value={form.name || ""} onChange={handleChange} placeholder="Name"
+            className="text-black w-full border rounded-lg p-2" />
 
-          <select
-            name="category_name"
-            value={form.category_name || ""}
-            onChange={handleChange}
-            className="text-black w-full border rounded-lg p-2"
-          >
+          <select name="category_name" value={form.category_name || ""} onChange={handleChange}
+            className="text-black w-full border rounded-lg p-2">
             <option value="">Select Category</option>
             {categories.map((c) => (
               <option key={c.name} value={c.name}>{c.name}</option>
             ))}
           </select>
 
-          <input
-            name="quantity_per_unit"
-            value={form.quantity_per_unit || ""}
-            onChange={handleChange}
-            placeholder="Quantity Per Unit"
-            className="text-black w-full border rounded-lg p-2"
-          />
+          <input name="quantity_per_unit" value={form.quantity_per_unit || ""} onChange={handleChange}
+            placeholder="Quantity Per Unit" className="text-black w-full border rounded-lg p-2" />
 
-          <input
-            name="unit_of_measurement"
-            value={form.unit_of_measurement || ""}
-            onChange={handleChange}
-            placeholder="Unit (kg, pcs, etc)"
-            className="text-black w-full border rounded-lg p-2"
-          />
+          <input name="unit_of_measurement" value={form.unit_of_measurement || ""} onChange={handleChange}
+            placeholder="Unit (kg, pcs, etc)" className="text-black w-full border rounded-lg p-2" />
+
+          <input name="warehouse" value={form.warehouse || ""} onChange={handleChange}
+            placeholder="Warehouse (optional)" className="text-black w-full border rounded-lg p-2" />
 
           <label className="text-black flex items-center space-x-2">
             <input type="checkbox" name="discontinued" checked={form.discontinued} onChange={handleChange} />

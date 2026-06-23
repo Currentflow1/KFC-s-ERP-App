@@ -14,7 +14,9 @@ function emptyForm() {
   return {
     monitoring_employee: "",
     representative_employee: "",
+    staff_employee: "",
     supplier_name: "",
+    warehouse: "",
     product_name: "",
     incoming_bal: "",
     outgoing_bal: "",
@@ -95,19 +97,6 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   );
 }
 
-// ── Main component ────────────────────────────────────────────────────────────
-//
-// OrderTable is online-only. Product selection is now INDEPENDENT of
-// supplier — all products for the active type (raw/finished) are always
-// shown. Supplier is still captured for raw+incoming orders (it's a
-// required FK on the row) but no longer filters or gates the product list.
-//
-// No direct inventory writes happen here. Every add/edit/delete only
-// touches the transaction log; InventoryPage's Realtime subscription +
-// pending-tx overlay (finalized_at IS NULL) handles the live preview.
-// Writing to inventory directly from here would double-count balances
-// when InventoryPage's finalizeDay() later folds the same pending rows in.
-
 export default function OrderTable() {
   const supabase = useMemo(() => createClient(), []);
 
@@ -123,37 +112,46 @@ export default function OrderTable() {
   const [successMsg, setSuccessMsg]   = useState(null);
   const [search, setSearch]           = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
-  // Always start false to match server render (navigator doesn't exist
-  // server-side, so reading isOnline() here would cause a hydration
-  // mismatch whenever the client's actual connection state differs from
-  // the server's assumed "online"). The real value is set in the effect
-  // below, right after mount.
   const [offline, setOffline]         = useState(false);
 
   const [monitoringOptions, setMonitoringOptions]         = useState([]);
   const [representativeOptions, setRepresentativeOptions] = useState([]);
+  const [staffOptions, setStaffOptions]                   = useState([]);
   const [supplierOptions, setSupplierOptions]             = useState([]);
-  // All raw product names, unfiltered by supplier
-  const [rawProducts, setRawProducts]                     = useState([]);
-  const [finishedProducts, setFinishedProducts]           = useState([]);
 
-  const isRaw         = productType === PRODUCT_TYPE.RAW;
-  const isIncoming     = stockType   === STOCK_TYPE.INCOMING;
-  const showSupplier   = isRaw && isIncoming;
+  // Raw product objects with warehouse info for filtering
+  const [rawProducts, setRawProducts]         = useState([]); // [{ name, warehouse }]
+  const [finishedProducts, setFinishedProducts] = useState([]); // [{ name, warehouse }]
 
-  const txTableName  = isRaw ? "raw_materials_transaction_log"    : "finished_products_transaction_log";
-  const invTableName = isRaw ? "raw_materials_inventory"          : "finished_products_inventory";
+  const isRaw       = productType === PRODUCT_TYPE.RAW;
+  const isIncoming  = stockType   === STOCK_TYPE.INCOMING;
+  const showSupplier = isRaw && isIncoming;
 
-  // Product list is now always "all products for this type" — never
-  // narrowed by which supplier is selected.
-  const productOptions = isRaw ? rawProducts : finishedProducts;
+  const txTableName  = isRaw ? "raw_materials_transaction_log"  : "finished_products_transaction_log";
+  const invTableName = isRaw ? "raw_materials_inventory"        : "finished_products_inventory";
+
+  // All unique warehouses for the active product type (null/empty excluded)
+  const warehouseOptions = useMemo(() => {
+    const source = isRaw ? rawProducts : finishedProducts;
+    return [...new Set(source.map((p) => p.warehouse).filter(Boolean))].sort();
+  }, [isRaw, rawProducts, finishedProducts]);
+
+  // Product names filtered by selected warehouse (if any)
+  const productOptions = useMemo(() => {
+    const source = isRaw ? rawProducts : finishedProducts;
+    if (!formData.warehouse) return source.map((p) => p.name);
+    return source.filter((p) => p.warehouse === formData.warehouse).map((p) => p.name);
+  }, [isRaw, rawProducts, finishedProducts, formData.warehouse]);
+
+  // Edit-mode product options filtered by the edit row's warehouse
+  const editProductOptions = useMemo(() => {
+    const source = isRaw ? rawProducts : finishedProducts;
+    if (!editData.warehouse) return source.map((p) => p.name);
+    return source.filter((p) => p.warehouse === editData.warehouse).map((p) => p.name);
+  }, [isRaw, rawProducts, finishedProducts, editData.warehouse]);
 
   useEffect(() => {
-    // Correct the offline state to reality immediately after mount —
-    // this runs only on the client, after hydration is already complete,
-    // so it can never cause a server/client mismatch.
     setOffline(!isOnline());
-
     function handleOffline() { setOffline(true); }
     function handleOnline()  { setOffline(false); }
     window.addEventListener("offline", handleOffline);
@@ -169,20 +167,20 @@ export default function OrderTable() {
 
   async function fetchOptions() {
     if (!isOnline()) return;
-    const [mon, rep, sup, rawProd, finProd] = await Promise.all([
+    const [mon, rep, staff, sup, rawProd, finProd] = await Promise.all([
       supabase.from("monitoring_employee").select("name"),
       supabase.from("representative_employee").select("name"),
+      supabase.from("staff_employee").select("name"),
       supabase.from("suppliers").select("contact_person"),
-      supabase.from("raw_materials_static").select("name"),
-      supabase.from("finished_products_static").select("name"),
+      supabase.from("raw_materials_static").select("name, warehouse"),
+      supabase.from("finished_products_static").select("name, warehouse"),
     ]);
     setMonitoringOptions(mon.data?.map((r) => r.name) ?? []);
     setRepresentativeOptions(rep.data?.map((r) => r.name) ?? []);
+    setStaffOptions(staff.data?.map((r) => r.name) ?? []);
     setSupplierOptions((sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A"));
-
-    // All raw material names — no supplier grouping/filtering anymore
-    setRawProducts((rawProd.data ?? []).map((r) => r.name));
-    setFinishedProducts((finProd.data ?? []).map((r) => r.name));
+    setRawProducts(rawProd.data ?? []);
+    setFinishedProducts(finProd.data ?? []);
   }
 
   async function fetchRows() {
@@ -222,23 +220,61 @@ export default function OrderTable() {
     setSearch("");
   }
 
-  // Supplier is still recorded on raw+incoming rows (required FK), but
-  // selecting it no longer touches the product list — product stays
-  // independent and shows everything at all times.
-  function handleSupplierChange(supplierName) {
-    setFormData((prev) => ({ ...prev, supplier_name: supplierName }));
+  // When warehouse changes in add form, clear product if it's no longer
+  // in the filtered list so the user can't submit a stale selection.
+  function handleWarehouseChange(warehouse) {
+    setFormData((prev) => {
+      const source = isRaw ? rawProducts : finishedProducts;
+      const validNames = warehouse
+        ? source.filter((p) => p.warehouse === warehouse).map((p) => p.name)
+        : source.map((p) => p.name);
+      return {
+        ...prev,
+        warehouse,
+        product_name: validNames.includes(prev.product_name) ? prev.product_name : "",
+      };
+    });
+  }
+
+  // Same for edit mode
+  function handleEditWarehouseChange(warehouse) {
+    setEditData((prev) => {
+      const source = isRaw ? rawProducts : finishedProducts;
+      const validNames = warehouse
+        ? source.filter((p) => p.warehouse === warehouse).map((p) => p.name)
+        : source.map((p) => p.name);
+      return {
+        ...prev,
+        warehouse,
+        product_name: validNames.includes(prev.product_name) ? prev.product_name : "",
+      };
+    });
   }
 
   async function resolveInventoryId(productName) {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from(invTableName)
       .select("id")
-      .eq("name", productName)
-      .single();
-    return data?.id ?? null;
-  }
+      .eq("name", productName);
 
-  // ── ADD — tx log only, no inventory write ──────────────────────────────────
+    if (error) {
+      throw new Error(`Inventory lookup failed (${invTableName}): ${error.message}`);
+    }
+    if (!data || data.length === 0) {
+      throw new Error(
+        `No row in "${invTableName}" has name = "${productName}". ` +
+        `Check that this product exists there and the name matches exactly (case/spacing) ` +
+        `the name in "${isRaw ? "raw_materials_static" : "finished_products_static"}".`
+      );
+    }
+    if (data.length > 1) {
+      throw new Error(
+        `Found ${data.length} rows in "${invTableName}" named "${productName}" — ` +
+        `names must be unique there for this lookup to work.`
+      );
+    }
+    return data[0].id;
+  }
 
   async function handleAdd() {
     if (!isOnline()) { setError("You're offline — reconnect to add an order."); return; }
@@ -254,12 +290,12 @@ export default function OrderTable() {
     setSaving(true);
     try {
       const inventory_id = await resolveInventoryId(formData.product_name);
-      if (!inventory_id) throw new Error("Could not resolve inventory ID for that product.");
 
       const payload = {
         inventory_id,
         monitoring_employee:      formData.monitoring_employee,
         representative_employee:  isIncoming ? null : formData.representative_employee,
+        staff_employee:           isIncoming ? null : (formData.staff_employee || null),
         product_name:             formData.product_name,
         incoming_bal:             isIncoming ? qty : 0,
         outgoing_bal:             isIncoming ? 0 : qty,
@@ -271,9 +307,6 @@ export default function OrderTable() {
       const { error: insertError } = await supabase.from(txTableName).insert([payload]);
       if (insertError) throw insertError;
 
-      // No inventory write — InventoryPage's Realtime subscription picks up
-      // this insert and refreshes the live preview automatically.
-
       resetForm();
       await fetchRows();
       showSuccess("Order added. Inventory preview will update automatically.");
@@ -284,20 +317,18 @@ export default function OrderTable() {
     }
   }
 
-  // ── EDIT SAVE — tx log only ─────────────────────────────────────────────────
-
   async function handleEditSave(id) {
     if (!isOnline()) { setError("You're offline — reconnect to save changes."); return; }
     setError(null);
     setSaving(true);
     try {
       const newInventoryId = await resolveInventoryId(editData.product_name);
-      if (!newInventoryId) throw new Error("Could not resolve inventory ID for that product.");
 
       const updatePayload = {
         inventory_id:             newInventoryId,
         monitoring_employee:      editData.monitoring_employee,
         representative_employee:  editData.representative_employee ?? null,
+        staff_employee:           editData.staff_employee ?? null,
         product_name:             editData.product_name,
         incoming_bal:             Number(editData.incoming_bal ?? 0),
         outgoing_bal:             Number(editData.outgoing_bal ?? 0),
@@ -312,8 +343,6 @@ export default function OrderTable() {
         .from(txTableName).update(updatePayload).eq("id", id);
       if (updateError) throw updateError;
 
-      // No inventory write — Realtime handles the live update.
-
       setEditingId(null);
       await fetchRows();
       showSuccess("Order updated.");
@@ -323,8 +352,6 @@ export default function OrderTable() {
       setSaving(false);
     }
   }
-
-  // ── DELETE — tx log only ─────────────────────────────────────────────────────
 
   async function confirmDelete() {
     if (!isOnline()) {
@@ -336,15 +363,11 @@ export default function OrderTable() {
     setDeleteTarget(null);
     setError(null);
     try {
-      // Soft-remove: mark as deleted instead of hard-deleting, so the row
-      // stays visible in Transaction Logs with a "Deleted" status badge.
       const { error: deleteError } = await supabase
         .from(txTableName)
         .update({ removed_at: new Date().toISOString(), removed_reason: "deleted" })
         .eq("id", id);
       if (deleteError) throw deleteError;
-
-      // No inventory write — Realtime handles the live update.
 
       await fetchRows();
       showSuccess("Order deleted.");
@@ -356,15 +379,13 @@ export default function OrderTable() {
   function handleEditStart(row) {
     if (!isOnline()) { setError("You're offline — reconnect to edit this order."); return; }
     setEditingId(row.id);
-    setEditData({ ...row });
+    setEditData({ ...row, warehouse: "" });
   }
   function handleEditChange(field, value) { setEditData((prev) => ({ ...prev, [field]: value })); }
 
   const filteredRows = rows
     .filter((r) => isIncoming ? (r.incoming_bal ?? 0) > 0 : (r.outgoing_bal ?? 0) > 0)
     .filter((r) => r.product_name?.toLowerCase().includes(search.trim().toLowerCase()));
-
-  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
@@ -392,22 +413,13 @@ export default function OrderTable() {
       )}
 
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
-
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
-          <button
-            onClick={() => setProductType(PRODUCT_TYPE.RAW)}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
+          <button onClick={() => setProductType(PRODUCT_TYPE.RAW)}
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             Raw Materials
           </button>
-          <button
-            onClick={() => setProductType(PRODUCT_TYPE.FINISHED)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              !isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
+          <button onClick={() => setProductType(PRODUCT_TYPE.FINISHED)}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${!isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             Finished Products
           </button>
         </div>
@@ -415,65 +427,67 @@ export default function OrderTable() {
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
 
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
-          <button
-            onClick={() => setStockType(STOCK_TYPE.INCOMING)}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
+          <button onClick={() => setStockType(STOCK_TYPE.INCOMING)}
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             ↓ Incoming
           </button>
-          <button
-            onClick={() => setStockType(STOCK_TYPE.OUTGOING)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              !isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
+          <button onClick={() => setStockType(STOCK_TYPE.OUTGOING)}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${!isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             ↑ Outgoing
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
-          {error}
-        </div>
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">{error}</div>
       )}
       {successMsg && (
-        <div className="mb-4 rounded-md border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-700">
-          {successMsg}
-        </div>
+        <div className="mb-4 rounded-md border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-700">{successMsg}</div>
       )}
 
+      {/* ── Add form ── */}
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-5">
         <h2 className="text-sm font-semibold text-gray-900 mb-4">
           {isIncoming ? "Add Incoming Order" : "Add Outgoing Order"}
-          <span className="ml-2 text-gray-400 font-normal">
-            — {isRaw ? "Raw Materials" : "Finished Products"}
-          </span>
+          <span className="ml-2 text-gray-400 font-normal">— {isRaw ? "Raw Materials" : "Finished Products"}</span>
         </h2>
 
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
-          <SearchableSelect label="Monitoring" value={formData.monitoring_employee} options={monitoringOptions}
-            disabled={offline}
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
+          <SearchableSelect label="Monitoring" value={formData.monitoring_employee}
+            options={monitoringOptions} disabled={offline}
             onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))} />
 
           {!isIncoming && (
-            <SearchableSelect label="Representative" value={formData.representative_employee} options={representativeOptions}
-              disabled={offline}
+            <SearchableSelect label="Representative" value={formData.representative_employee}
+              options={representativeOptions} disabled={offline}
               onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))} />
           )}
 
-          {showSupplier && (
-            <SearchableSelect label="Supplier" value={formData.supplier_name} options={supplierOptions}
-              disabled={offline}
-              onChange={handleSupplierChange} />
+          {!isIncoming && (
+            <SearchableSelect label="Staff" value={formData.staff_employee}
+              options={staffOptions} disabled={offline}
+              onChange={(v) => setFormData((p) => ({ ...p, staff_employee: v }))} />
           )}
 
-          {/* Product — always shows ALL products for the active type,
-              never filtered or gated by supplier selection. */}
+          {showSupplier && (
+            <SearchableSelect label="Supplier" value={formData.supplier_name}
+              options={supplierOptions} disabled={offline}
+              onChange={(v) => setFormData((p) => ({ ...p, supplier_name: v }))} />
+          )}
+
+          {/* Warehouse — picking this filters the product list below */}
           <SearchableSelect
-            label="Product"
+            label="Warehouse (optional)"
+            value={formData.warehouse}
+            options={warehouseOptions}
+            disabled={offline || warehouseOptions.length === 0}
+            placeholder={warehouseOptions.length === 0 ? "No warehouses set" : "All warehouses"}
+            onChange={handleWarehouseChange}
+          />
+
+          {/* Product — filtered by warehouse if one is selected */}
+          <SearchableSelect
+            label={formData.warehouse ? `Product (${formData.warehouse})` : "Product"}
             value={formData.product_name}
             options={productOptions}
             disabled={offline}
@@ -496,22 +510,20 @@ export default function OrderTable() {
 
         <div className="mt-4 flex justify-end">
           <button onClick={handleAdd} disabled={saving || offline}
-            title={offline ? "You're offline — reconnect to add an order" : undefined}
             className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
             {saving ? "Saving…" : "Add Order"}
           </button>
         </div>
       </div>
 
+      {/* ── Orders table ── */}
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
         <div className="flex items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Search products…"
             className="w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           {search && (
-            <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">
-              Clear
-            </button>
+            <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
           )}
           {!loading && (
             <span className="ml-auto text-xs text-gray-400 shrink-0">
@@ -522,9 +534,7 @@ export default function OrderTable() {
 
         <div className="overflow-x-auto">
           {offline ? (
-            <div className="px-4 py-8 text-sm text-gray-400 text-center">
-              Reconnect to view and manage orders.
-            </div>
+            <div className="px-4 py-8 text-sm text-gray-400 text-center">Reconnect to view and manage orders.</div>
           ) : loading ? (
             <div className="px-4 py-4 text-sm text-gray-400">Loading…</div>
           ) : filteredRows.length === 0 ? (
@@ -537,6 +547,7 @@ export default function OrderTable() {
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
                   {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>}
+                  {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Staff</th>}
                   {showSupplier && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Product</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">{isIncoming ? "Incoming Qty" : "Outgoing Qty"}</th>
@@ -561,6 +572,13 @@ export default function OrderTable() {
                             : <span className="text-gray-700">{row.representative_employee}</span>}
                         </td>
                       )}
+                      {!isIncoming && (
+                        <td className="px-4 py-3 min-w-[160px]">
+                          {isEditing
+                            ? <SearchableSelect value={editData.staff_employee ?? ""} options={staffOptions} onChange={(v) => handleEditChange("staff_employee", v)} />
+                            : <span className="text-gray-700">{row.staff_employee}</span>}
+                        </td>
+                      )}
                       {showSupplier && (
                         <td className="px-4 py-3 min-w-[160px]">
                           {isEditing
@@ -568,10 +586,25 @@ export default function OrderTable() {
                             : <span className="text-gray-700">{row.supplier_name}</span>}
                         </td>
                       )}
-                      <td className="px-4 py-3 font-medium text-gray-900 min-w-[160px]">
-                        {isEditing
-                          ? <SearchableSelect value={editData.product_name} options={isRaw ? rawProducts : finishedProducts} onChange={(v) => handleEditChange("product_name", v)} />
-                          : row.product_name}
+                      <td className="px-4 py-3 font-medium text-gray-900 min-w-[200px]">
+                        {isEditing ? (
+                          <div className="flex flex-col gap-1.5">
+                            {/* Warehouse filter in edit mode */}
+                            <SearchableSelect
+                              placeholder="Filter by warehouse…"
+                              value={editData.warehouse ?? ""}
+                              options={warehouseOptions}
+                              onChange={handleEditWarehouseChange}
+                            />
+                            <SearchableSelect
+                              value={editData.product_name}
+                              options={editProductOptions}
+                              onChange={(v) => handleEditChange("product_name", v)}
+                            />
+                          </div>
+                        ) : (
+                          row.product_name
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {isEditing ? (
@@ -580,9 +613,7 @@ export default function OrderTable() {
                             value={isIncoming ? editData.incoming_bal : editData.outgoing_bal}
                             onChange={(e) => handleEditChange(isIncoming ? "incoming_bal" : "outgoing_bal", e.target.value)} />
                         ) : (
-                          <span className="text-gray-900">
-                            {isIncoming ? row.incoming_bal : row.outgoing_bal}
-                          </span>
+                          <span className="text-gray-900">{isIncoming ? row.incoming_bal : row.outgoing_bal}</span>
                         )}
                       </td>
                       <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
@@ -593,15 +624,14 @@ export default function OrderTable() {
                           <div className="inline-flex items-center gap-1">
                             <button onClick={() => handleEditSave(row.id)} disabled={saving || offline}
                               className="px-3 py-1.5 text-xs font-medium bg-green-600 hover:bg-green-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Save</button>
-                            <button onClick={() => setEditingId(null)} className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors">Cancel</button>
+                            <button onClick={() => setEditingId(null)}
+                              className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors">Cancel</button>
                           </div>
                         ) : (
                           <div className="inline-flex items-center gap-1">
                             <button onClick={() => handleEditStart(row)} disabled={offline}
-                              title={offline ? "You're offline — reconnect to edit" : undefined}
                               className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Edit</button>
                             <button onClick={() => setDeleteTarget(row.id)} disabled={offline}
-                              title={offline ? "You're offline — reconnect to delete" : undefined}
                               className="px-3 py-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Delete</button>
                           </div>
                         )}

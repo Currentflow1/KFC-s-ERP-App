@@ -24,9 +24,15 @@ export default function InventoryPage() {
   const [date, setDate] = useState("");
   const [loading, setLoading] = useState(false);
   const [printedAt, setPrintedAt] = useState(null);
+  const [warehouseFilter, setWarehouseFilter] = useState("all");
 
   useEffect(() => {
     loadData();
+  }, [tab, date]);
+
+  // reset warehouse filter when tab or date changes
+  useEffect(() => {
+    setWarehouseFilter("all");
   }, [tab, date]);
 
   async function loadData() {
@@ -61,15 +67,17 @@ export default function InventoryPage() {
     const merged = (staticItems || []).map((s) => {
       const inv = map[s.id];
       return {
-        id: s.id,
-        name: s.name,
-        category_id: s.category_id,
-        beg_bal: inv?.beg_bal ?? 0,
+        id:           s.id,
+        name:         s.name,
+        category_id:  s.category_id,
+        // warehouse comes from the static table (source of truth)
+        warehouse:    s.warehouse ?? null,
+        beg_bal:      inv?.beg_bal      ?? 0,
         incoming_bal: inv?.incoming_bal ?? 0,
         outgoing_bal: inv?.outgoing_bal ?? 0,
-        current_bal: inv?.current_bal ?? 0,
-        actual_bal: inv?.actual_bal ?? 0,
-        loss: inv?.loss ?? 0,
+        current_bal:  inv?.current_bal  ?? 0,
+        actual_bal:   inv?.actual_bal   ?? 0,
+        loss:         inv?.loss         ?? 0,
       };
     });
 
@@ -82,21 +90,33 @@ export default function InventoryPage() {
     requestAnimationFrame(() => window.print());
   }
 
+  // ── warehouse list derived from items ────────────────────────────────────────
+  const warehouses = useMemo(() => {
+    const set = new Set(items.map((i) => i.warehouse).filter(Boolean));
+    return Array.from(set).sort();
+  }, [items]);
+
+  // ── filtered items (respects warehouse selector) ─────────────────────────────
+  const filteredItems = useMemo(
+    () => warehouseFilter === "all" ? items : items.filter((i) => i.warehouse === warehouseFilter),
+    [items, warehouseFilter]
+  );
+
   const summary = useMemo(() => ({
-    totalItems: items.length,
-    stock: items.reduce((a, b) => a + Number(b.current_bal), 0),
-    actual: items.reduce((a, b) => a + Number(b.actual_bal), 0),
-    loss: items.reduce((a, b) => a + Number(b.loss), 0),
-  }), [items]);
+    totalItems: filteredItems.length,
+    stock:  filteredItems.reduce((a, b) => a + Number(b.current_bal), 0),
+    actual: filteredItems.reduce((a, b) => a + Number(b.actual_bal),  0),
+    loss:   filteredItems.reduce((a, b) => a + Number(b.loss),        0),
+  }), [filteredItems]);
 
   const outOfStock = useMemo(
-    () => items.filter((i) => Number(i.current_bal) === 0),
-    [items]
+    () => filteredItems.filter((i) => Number(i.current_bal) === 0),
+    [filteredItems]
   );
 
   const lowStock = useMemo(
-    () => items.filter((i) => Number(i.current_bal) > 0 && Number(i.current_bal) < LOW_STOCK_THRESHOLD),
-    [items]
+    () => filteredItems.filter((i) => Number(i.current_bal) > 0 && Number(i.current_bal) < LOW_STOCK_THRESHOLD),
+    [filteredItems]
   );
 
   const priorityList = useMemo(() => {
@@ -110,12 +130,12 @@ export default function InventoryPage() {
   const hasAlerts = priorityList.length > 0;
 
   const chartData = useMemo(
-    () => items.map((i) => ({
-      name: i.name,
+    () => filteredItems.map((i) => ({
+      name:  i.name,
       stock: Number(i.current_bal),
-      loss: Number(i.loss),
+      loss:  Number(i.loss),
     })),
-    [items]
+    [filteredItems]
   );
 
   return (
@@ -150,12 +170,14 @@ export default function InventoryPage() {
 
       <div id="print-area" className="px-6 py-5 bg-gray-50 min-h-screen">
 
+        {/* Header */}
         <div className="flex justify-between items-start mb-5">
           <div>
             <h1 className="text-xl font-semibold text-gray-900">Inventory Summary</h1>
-            <p className=" print-subtitle text-sm text-gray-500 mt-0.5">
+            <p className="print-subtitle text-sm text-gray-500 mt-0.5">
               {date ? `Snapshot: ${date}` : "Live Inventory View"} &mdash;{" "}
               {tab === "finished" ? "Finished Products" : "Raw Materials"}
+              {warehouseFilter !== "all" && ` — 📦 ${warehouseFilter}`}
             </p>
           </div>
           <button
@@ -166,6 +188,7 @@ export default function InventoryPage() {
           </button>
         </div>
 
+        {/* Toolbar */}
         <div className="no-print flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
           <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
             <button
@@ -185,9 +208,44 @@ export default function InventoryPage() {
               Raw Materials
             </button>
           </div>
+
           <InventoryCalendar tab={tab} date={date} onSelectDate={setDate} />
+
+          {/* Warehouse filter — only shown when there are multiple warehouses */}
+          {warehouses.length > 0 && (
+            <>
+              <div className="w-px h-6 bg-gray-200 mx-0.5" />
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-gray-400 font-medium">📦</span>
+                <button
+                  onClick={() => setWarehouseFilter("all")}
+                  className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
+                    warehouseFilter === "all"
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                  }`}
+                >
+                  All
+                </button>
+                {warehouses.map((wh) => (
+                  <button
+                    key={wh}
+                    onClick={() => setWarehouseFilter(wh)}
+                    className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
+                      warehouseFilter === wh
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+                    }`}
+                  >
+                    {wh}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </div>
 
+        {/* KPI cards */}
         <div className="print-kpi-row grid grid-cols-4 gap-3 mb-5">
           {[
             { label: "Items tracked", value: summary.totalItems, color: "bg-blue-600" },
@@ -202,6 +260,7 @@ export default function InventoryPage() {
           ))}
         </div>
 
+        {/* Alerts */}
         {hasAlerts && (
           <div className="print-alert-section mb-5 bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
             <div className="print-alert-title flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-red-50">
@@ -214,7 +273,14 @@ export default function InventoryPage() {
             <ul className="max-h-56 overflow-y-auto divide-y divide-gray-100">
               {priorityList.map((i) => (
                 <li key={i.id} className="print-alert-item flex items-center justify-between px-4 py-2 text-sm">
-                  <span className="font-medium text-gray-900">{i.name}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium text-gray-900">{i.name}</span>
+                    {i.warehouse && (
+                      <span className="text-xs text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">
+                        📦 {i.warehouse}
+                      </span>
+                    )}
+                  </div>
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
                     i.severity === "out" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"
                   }`}>
@@ -226,6 +292,7 @@ export default function InventoryPage() {
           </div>
         )}
 
+        {/* Chart */}
         <div className="print-hide-chart mb-5 bg-white border border-gray-200 rounded-lg shadow-sm p-4">
           <div className="flex items-center justify-between mb-3">
             <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Stock vs. loss by item</h2>
@@ -241,15 +308,17 @@ export default function InventoryPage() {
               <YAxis tick={{ fontSize: 11, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
               <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }} />
               <Bar dataKey="stock" fill="#16A34A" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="loss" fill="#DC2626" radius={[3, 3, 0, 0]} />
+              <Bar dataKey="loss"  fill="#DC2626" radius={[3, 3, 0, 0]} />
             </ComposedChart>
           </ResponsiveContainer>
         </div>
 
+        {/* Detail table */}
         <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gray-50">
             <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
               {tab === "finished" ? "Finished Products" : "Raw Materials"} — detail
+              {warehouseFilter !== "all" && ` · ${warehouseFilter}`}
             </span>
             {loading && <span className="text-xs text-gray-400 animate-pulse">Loading…</span>}
           </div>
@@ -258,6 +327,7 @@ export default function InventoryPage() {
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
+                  <th className="px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
                   <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Beg</th>
                   <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Incoming</th>
                   <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Outgoing</th>
@@ -267,14 +337,14 @@ export default function InventoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {items.length === 0 && !loading && (
+                {filteredItems.length === 0 && !loading && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">
+                    <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">
                       No inventory data found.
                     </td>
                   </tr>
                 )}
-                {items.map((i) => {
+                {filteredItems.map((i) => {
                   const isOut = Number(i.current_bal) === 0;
                   const isLow = Number(i.current_bal) > 0 && Number(i.current_bal) < LOW_STOCK_THRESHOLD;
                   return (
@@ -283,6 +353,9 @@ export default function InventoryPage() {
                         {isOut && <span className="inline-block w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />}
                         {isLow && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
                         {i.name}
+                      </td>
+                      <td className="px-4 py-3 text-gray-400 text-xs">
+                        {i.warehouse ?? <span className="text-gray-200">—</span>}
                       </td>
                       <td className="px-4 py-3 text-center text-gray-600">{i.beg_bal}</td>
                       <td className="px-4 py-3 text-center font-semibold text-green-600">
@@ -304,13 +377,14 @@ export default function InventoryPage() {
                   );
                 })}
               </tbody>
-              {items.length > 0 && (
+              {filteredItems.length > 0 && (
                 <tfoot>
                   <tr className="border-t-2 border-gray-300 bg-gray-50 text-xs font-semibold uppercase tracking-wide text-gray-600">
                     <td className="px-4 py-2.5">Totals</td>
-                    <td className="px-4 py-2.5 text-center">{items.reduce((a, b) => a + Number(b.beg_bal), 0)}</td>
-                    <td className="px-4 py-2.5 text-center text-green-700">+{items.reduce((a, b) => a + Number(b.incoming_bal), 0)}</td>
-                    <td className="px-4 py-2.5 text-center text-red-700">-{items.reduce((a, b) => a + Number(b.outgoing_bal), 0)}</td>
+                    <td className="px-4 py-2.5" />
+                    <td className="px-4 py-2.5 text-center">{filteredItems.reduce((a, b) => a + Number(b.beg_bal), 0)}</td>
+                    <td className="px-4 py-2.5 text-center text-green-700">+{filteredItems.reduce((a, b) => a + Number(b.incoming_bal), 0)}</td>
+                    <td className="px-4 py-2.5 text-center text-red-700">-{filteredItems.reduce((a, b) => a + Number(b.outgoing_bal), 0)}</td>
                     <td className="px-4 py-2.5 text-center">{summary.stock}</td>
                     <td className="px-4 py-2.5 text-center">{summary.actual}</td>
                     <td className="px-4 py-2.5 text-center text-red-600">{summary.loss}</td>
@@ -321,9 +395,13 @@ export default function InventoryPage() {
           </div>
         </div>
 
+        {/* Print footer */}
         <div className="print-footer hidden print:block mt-4 text-xs text-gray-400 border-t border-dashed border-gray-300 pt-3">
           <div className="flex justify-between">
-            <span>Inventory System — {tab === "finished" ? "Finished Products" : "Raw Materials"}</span>
+            <span>
+              Inventory System — {tab === "finished" ? "Finished Products" : "Raw Materials"}
+              {warehouseFilter !== "all" && ` — Warehouse: ${warehouseFilter}`}
+            </span>
             <span>Printed: {printedAt}</span>
           </div>
           {date && <span>Snapshot Date: {date}</span>}

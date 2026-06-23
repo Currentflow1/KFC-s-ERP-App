@@ -19,7 +19,6 @@ import InventoryHeader   from "./components/InventoryHeader";
 import InventoryTable    from "./components/InventoryTable";
 import ManipulatePanel   from "./components/ManipulationPanel";
 import InventoryCalendar from "./components/InventoryCalendar";
-import InventorySummary  from "./components/InventorySummary";
 
 // ─── table name helpers ───────────────────────────────────────────────────────
 function txTable(r)   { return r ? "raw_materials_transaction_log"      : "finished_products_transaction_log"; }
@@ -130,7 +129,7 @@ export default function InventoryPage() {
         const incoming_bal = Number(inv?.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(inv?.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal  = beg_bal + incoming_bal - outgoing_bal;
-        return { id: s.id, name: s.name, category_id: s.category_id,
+        return { id: s.id, name: s.name, category_id: s.category_id, warehouse: s.warehouse ?? null,
           beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal, loss,
           _pendingIncoming: tx.incoming, _pendingOutgoing: tx.outgoing };
       });
@@ -184,24 +183,6 @@ export default function InventoryPage() {
     });
   }
 
-  // Soft-removes tx rows created at/after `since`, marking removed_reason:
-  // 'undone' instead of hard-deleting.
-  //
-  // IMPORTANT — finalized_at means two DIFFERENT things depending on
-  // transaction_source:
-  //   - "ordered" rows:     finalized_at is NULL until a real Finalize Day
-  //                         rollover commits them. Once set, genuinely
-  //                         locked-in history — never touch.
-  //   - "manipulated" rows: finalized_at is set IMMEDIATELY at creation by
-  //                         ManipulatePanel's buildTxPayload. It does NOT
-  //                         mean "went through Finalize Day". These rows
-  //                         must remain undoable even though finalized_at
-  //                         is non-null, otherwise "Undo Item" silently
-  //                         matches zero rows for every manipulation.
-  //
-  // So: only require finalized_at IS NULL for "ordered" rows; skip that
-  // check for "manipulated" rows. removed_at IS NULL is still required
-  // for both — an already-undone/deleted row is never re-marked.
   async function deletePendingTxSince(isRaw, since, inventoryId) {
     let orderedQuery = supabase
       .from(txTable(isRaw))
@@ -286,7 +267,7 @@ export default function InventoryPage() {
         const incoming_bal = Number(inv?.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(inv?.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal  = beg_bal + incoming_bal - outgoing_bal;
-        return { id: s.id, name: s.name, category_id: s.category_id,
+        return { id: s.id, name: s.name, category_id: s.category_id, warehouse: s.warehouse ?? null,
           beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal, loss,
           _pendingIncoming: tx.incoming, _pendingOutgoing: tx.outgoing };
       });
@@ -650,10 +631,6 @@ export default function InventoryPage() {
             {undoing === "close_day" ? "…" : "↩ Finalize"}
           </button>
         </div>
-      </div>
-
-      <div className="mb-4">
-        <InventorySummary tab={tab} />
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">

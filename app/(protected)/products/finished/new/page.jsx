@@ -62,10 +62,11 @@ export default function NewFinishedProduct() {
   const [categories, setCategories] = useState([]);
   const [form, setForm] = useState({
     name: "",
-    category_name: "",           // ← fixed
+    category_name: "",
     quantity_per_unit: "",
     unit_of_measurement: "",
     discontinued: false,
+    warehouse: "",
   });
 
   useEffect(() => {
@@ -84,10 +85,11 @@ export default function NewFinishedProduct() {
     const supabase = createClient();
     const { error } = await supabase.from("finished_products_static").insert([{
       name:                form.name,
-      category_name:       form.category_name,   // ← fixed
+      category_name:       form.category_name,
       quantity_per_unit:   Number(form.quantity_per_unit),
       unit_of_measurement: form.unit_of_measurement,
       discontinued:        form.discontinued,
+      warehouse:           form.warehouse || null,
     }]);
     if (error) { alert("Save failed: " + error.message); return; }
     router.push("/products");
@@ -113,6 +115,9 @@ export default function NewFinishedProduct() {
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
           <input name="unit_of_measurement" placeholder="Unit (kg, pcs, etc)" value={form.unit_of_measurement} onChange={handleChange}
+            className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+
+          <input name="warehouse" placeholder="Warehouse (optional)" value={form.warehouse} onChange={handleChange}
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
           <label className="text-black flex items-center space-x-2 text-sm">

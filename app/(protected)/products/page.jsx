@@ -45,15 +45,17 @@ export default function ProductsPage() {
 
   const filteredFinished = finished.filter((p) =>
     (p.name || "").toLowerCase().includes(q) ||
-    (p.category_name || "").toLowerCase().includes(q) ||   // ← fixed
-    (p.unit_of_measurement || "").toLowerCase().includes(q)
+    (p.category_name || "").toLowerCase().includes(q) ||
+    (p.unit_of_measurement || "").toLowerCase().includes(q) ||
+    (p.warehouse || "").toLowerCase().includes(q)
   );
 
   const filteredRaw = raw.filter((m) =>
     (m.name || "").toLowerCase().includes(q) ||
-    (m.category_name || "").toLowerCase().includes(q) ||   // ← fixed
-    (m.supplier_contact || "").toLowerCase().includes(q) || // ← fixed
-    (m.unit_of_measurement || "").toLowerCase().includes(q)
+    (m.category_name || "").toLowerCase().includes(q) ||
+    (m.supplier_contact || "").toLowerCase().includes(q) ||
+    (m.unit_of_measurement || "").toLowerCase().includes(q) ||
+    (m.warehouse || "").toLowerCase().includes(q)
   );
 
   const filtered = tab === "finished" ? filteredFinished : filteredRaw;
@@ -89,7 +91,7 @@ export default function ProductsPage() {
         <div className="w-px h-5 bg-gray-200" />
 
         <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder={tab === "finished" ? "Search by name, category, or unit…" : "Search by name, category, supplier, or unit…"}
+          placeholder={tab === "finished" ? "Search by name, category, warehouse, or unit…" : "Search by name, category, supplier, warehouse, or unit…"}
           className="text-black w-full max-w-sm border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
         {search && (
           <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
@@ -111,15 +113,16 @@ export default function ProductsPage() {
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Category</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Qty / Unit</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">UOM</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="6">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="7">Loading…</td></tr>
               ) : filteredFinished.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="6">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="7">
                   {search ? `No products matching "${search}"` : "No finished products yet"}
                 </td></tr>
               ) : filteredFinished.map((p) => (
@@ -128,6 +131,7 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-gray-500">{p.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{p.quantity_per_unit}</td>
                   <td className="px-4 py-3 text-gray-500">{p.unit_of_measurement}</td>
+                  <td className="px-4 py-3 text-gray-500">{p.warehouse || "—"}</td>
                   <td className="px-4 py-3">
                     {p.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
@@ -158,15 +162,16 @@ export default function ProductsPage() {
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Qty / Unit</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">UOM</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="7">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="8">Loading…</td></tr>
               ) : filteredRaw.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="7">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="8">
                   {search ? `No materials matching "${search}"` : "No raw materials yet"}
                 </td></tr>
               ) : filteredRaw.map((m) => (
@@ -176,6 +181,7 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-gray-500">{m.supplier_contact}</td>
                   <td className="px-4 py-3 text-gray-500">{m.quantity_per_unit}</td>
                   <td className="px-4 py-3 text-gray-500">{m.unit_of_measurement}</td>
+                  <td className="px-4 py-3 text-gray-500">{m.warehouse || "—"}</td>
                   <td className="px-4 py-3">
                     {m.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">

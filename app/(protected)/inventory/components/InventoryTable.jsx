@@ -41,6 +41,7 @@ export default function InventoryTable({ items, loading, onSelect }) {
       <table className="w-full text-sm min-w-[900px]">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-200">
+            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
             <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
             <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Beginning</th>
             <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">In</th>
@@ -54,7 +55,7 @@ export default function InventoryTable({ items, loading, onSelect }) {
         <tbody className="divide-y divide-gray-100">
           {filtered.length === 0 ? (
             <tr>
-              <td colSpan="8" className="px-4 py-8 text-sm text-gray-400 text-center">
+              <td colSpan="9" className="px-4 py-8 text-sm text-gray-400 text-center">
                 {search ? `No items matching "${search}"` : "No data found"}
               </td>
             </tr>
@@ -67,6 +68,7 @@ export default function InventoryTable({ items, loading, onSelect }) {
                   key={i.id}
                   className={`hover:bg-gray-50 transition-colors ${lowStock ? "bg-red-50/60" : ""}`}
                 >
+                  <td className="px-4 py-3 text-gray-500">{i.warehouse ?? "—"}</td>
                   <td className="px-4 py-3 font-medium text-gray-900">
                     {i.name}
                     {lowStock && (

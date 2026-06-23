@@ -63,11 +63,12 @@ export default function NewRawMaterial() {
   const [suppliers, setSuppliers] = useState([]);
   const [form, setForm] = useState({
     name: "",
-    category_name: "",        // ← fixed
-    supplier_contact: "",     // ← fixed
+    category_name: "",
+    supplier_contact: "",
     quantity_per_unit: "",
     unit_of_measurement: "",
     discontinued: false,
+    warehouse: "",
   });
 
   useEffect(() => {
@@ -89,11 +90,12 @@ export default function NewRawMaterial() {
     const supabase = createClient();
     const { error } = await supabase.from("raw_materials_static").insert([{
       name:                form.name,
-      category_name:       form.category_name,    // ← fixed
-      supplier_contact:    form.supplier_contact,  // ← fixed
+      category_name:       form.category_name,
+      supplier_contact:    form.supplier_contact,
       quantity_per_unit:   Number(form.quantity_per_unit),
       unit_of_measurement: form.unit_of_measurement,
       discontinued:        form.discontinued,
+      warehouse:           form.warehouse || null,
     }]);
     if (error) { alert("Save failed: " + error.message); return; }
     router.push("/products");
@@ -108,24 +110,19 @@ export default function NewRawMaterial() {
           <input name="name" placeholder="Material Name" value={form.name} onChange={handleChange}
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
-          <SearchableSelect
-            placeholder="Select Category"
-            value={form.category_name}
-            options={categories}
-            onChange={(v) => setForm((p) => ({ ...p, category_name: v }))}
-          />
+          <SearchableSelect placeholder="Select Category" value={form.category_name} options={categories}
+            onChange={(v) => setForm((p) => ({ ...p, category_name: v }))} />
 
-          <SearchableSelect
-            placeholder="Select Supplier Contact"
-            value={form.supplier_contact}
-            options={suppliers}
-            onChange={(v) => setForm((p) => ({ ...p, supplier_contact: v }))}
-          />
+          <SearchableSelect placeholder="Select Supplier Contact" value={form.supplier_contact} options={suppliers}
+            onChange={(v) => setForm((p) => ({ ...p, supplier_contact: v }))} />
 
           <input name="quantity_per_unit" placeholder="Quantity Per Unit" value={form.quantity_per_unit} onChange={handleChange}
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
           <input name="unit_of_measurement" placeholder="Unit (kg, pcs, etc)" value={form.unit_of_measurement} onChange={handleChange}
+            className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+
+          <input name="warehouse" placeholder="Warehouse (optional)" value={form.warehouse} onChange={handleChange}
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
           <label className="text-black flex items-center space-x-2 text-sm">

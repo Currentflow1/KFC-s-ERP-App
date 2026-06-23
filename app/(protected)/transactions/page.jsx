@@ -12,8 +12,8 @@ const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
 //   hard-deleted: 'deleted' (Order Table Delete) or 'undone' (Inventory
 //   Undo Item / Undo Session). NULL means still active.
 // actual_bal / loss  — populated on all "manipulated" rows
-const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, supplier_name, product_name, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
-const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, product_name, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
+const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, staff_employee, supplier_name, product_name, warehouse, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
+const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, staff_employee, product_name, warehouse, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -199,8 +199,10 @@ export default function TransactionLogsTable() {
     const isManipulated = source === "manipulated";
     return [
       r.product_name,
+      r.warehouse ?? null,
       r.monitoring_employee,
       r.representative_employee,
+      r.staff_employee ?? null,
       r.supplier_name ?? null,
       r.responsible_email ?? null,
       stockType,
@@ -334,11 +336,12 @@ export default function TransactionLogsTable() {
                   : "No results for that search."}
             </div>
           ) : (
-            <table className="w-full text-sm min-w-[1650px]">
+            <table className="w-full text-sm min-w-[1900px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Source</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Type</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Product</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Qty Changed</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Balance Before</th>
@@ -348,6 +351,7 @@ export default function TransactionLogsTable() {
                   {isRaw && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Staff</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Account Responsible</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Date & Time</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
@@ -403,6 +407,11 @@ export default function TransactionLogsTable() {
                             <span className="text-xs text-gray-400">—</span>
                           )}
                         </span>
+                      </td>
+
+                      {/* Warehouse */}
+                      <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50" : ""}`}>
+                        {row.warehouse ?? <span className="text-gray-300">—</span>}
                       </td>
 
                       <td className={`px-4 py-3 font-medium text-gray-900 ${isRemoved ? "line-through opacity-50" : ""}`}>
@@ -505,6 +514,20 @@ export default function TransactionLogsTable() {
                               {row.representative_employee[0].toUpperCase()}
                             </span>
                             <span className="text-gray-700">{row.representative_employee}</span>
+                          </div>
+                        ) : (
+                          <span className="text-gray-300">—</span>
+                        )}
+                      </td>
+
+                      {/* Staff */}
+                      <td className="px-4 py-3">
+                        {row.staff_employee ? (
+                          <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50" : ""}`}>
+                            <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
+                              {row.staff_employee[0].toUpperCase()}
+                            </span>
+                            <span className="text-gray-700">{row.staff_employee}</span>
                           </div>
                         ) : (
                           <span className="text-gray-300">—</span>
