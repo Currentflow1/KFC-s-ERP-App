@@ -122,7 +122,7 @@ export default function NewRawMaterial() {
           <input name="unit_of_measurement" placeholder="Unit (kg, pcs, etc)" value={form.unit_of_measurement} onChange={handleChange}
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
-          <input name="warehouse" placeholder="Warehouse (optional)" value={form.warehouse} onChange={handleChange}
+          <input name="warehouse" placeholder="Warehouse" value={form.warehouse} onChange={handleChange}
             className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
 
           <label className="text-black flex items-center space-x-2 text-sm">

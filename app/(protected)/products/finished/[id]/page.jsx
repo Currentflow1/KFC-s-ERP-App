@@ -73,7 +73,7 @@ export default function EditFinishedProduct({ params }) {
             placeholder="Unit (kg, pcs, etc)" className="text-black w-full border rounded-lg p-2" />
 
           <input name="warehouse" value={form.warehouse || ""} onChange={handleChange}
-            placeholder="Warehouse (optional)" className="text-black w-full border rounded-lg p-2" />
+            placeholder="Warehouse" className="text-black w-full border rounded-lg p-2" />
 
           <label className="text-black flex items-center space-x-2">
             <input type="checkbox" name="discontinued" checked={form.discontinued} onChange={handleChange} />
