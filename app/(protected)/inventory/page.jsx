@@ -250,17 +250,10 @@ export default function InventoryPage() {
       await resetDailyIfNeeded();
       await saveSnapshot("session", t);
 
-      // Auto-finalize both tabs if today hasn't been finalized yet.
-      // Runs silently (no confirms, no alerts) — if it fails, the user
-      // can still finalize manually. Both tabs are finalized on boot
-      // regardless of which tab is currently active, so the raw and
-      // finished histories stay in sync at day boundaries.
-      if (isOnline()) {
-        await Promise.all([
-          runFinalize(false, "finished", { silent: true }),
-          runFinalize(true,  "raw",      { silent: true }),
-        ]);
-      }
+      // Finalize is no longer triggered on page load — a 23:59 (Asia/Manila)
+      // pg_cron job (auto_finalize_inventory_day) is now the sole trigger,
+      // so the day stays open and editable until then regardless of when
+      // anyone opens the app. Manual "Finalize day" button still works.
 
       await Promise.all([
         loadData(t, ""),
