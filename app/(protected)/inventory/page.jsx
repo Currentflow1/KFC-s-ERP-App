@@ -19,6 +19,7 @@ import InventoryHeader   from "./components/InventoryHeader";
 import InventoryTable    from "./components/InventoryTable";
 import ManipulatePanel   from "./components/ManipulationPanel";
 import InventoryCalendar from "./components/InventoryCalendar";
+import InventorySummary  from "./components/InventorySummary";
 
 // ─── table name helpers ───────────────────────────────────────────────────────
 function txTable(r)   { return r ? "raw_materials_transaction_log"      : "finished_products_transaction_log"; }
@@ -31,6 +32,8 @@ function todayLocal() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 function isOnline() { return typeof navigator === "undefined" ? true : navigator.onLine; }
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 export default function InventoryPage() {
   const supabase = createClient();
@@ -49,7 +52,9 @@ export default function InventoryPage() {
   const [activeItem,       setActiveItem]       = useState(null);
   const [booted,           setBooted]           = useState(false);
   const [usingOffline,     setUsingOffline]     = useState(false);
+  const [manipulationError, setManipulationError] = useState(null);
 
+  // Refs so async functions always read the latest tab/date without closures
   const tabRef  = useRef("finished");
   const dateRef = useRef("");
   tabRef.current  = tab;
@@ -57,6 +62,8 @@ export default function InventoryPage() {
 
   function isRawNow() { return tabRef.current === "raw"; }
   function dateNow()  { return dateRef.current; }
+
+  // ─── checkFinalizedFor ─────────────────────────────────────────────────────
 
   async function checkFinalizedFor(whichTab) {
     if (!isOnline()) return;
@@ -67,6 +74,8 @@ export default function InventoryPage() {
     if (error) { console.error("checkFinalizedFor:", error.message); return; }
     setAlreadyFinalized(!!(data && data.length > 0));
   }
+
+  // ─── checkUndoAvailability ────────────────────────────────────────────────
 
   async function checkUndoAvailability(whichTab) {
     const t      = whichTab ?? tabRef.current;
@@ -81,6 +90,8 @@ export default function InventoryPage() {
     setCanUndoSession ((b.data || []).length > 0);
     setCanUndoCloseDay((c.data || []).length > 0);
   }
+
+  // ─── loadData ─────────────────────────────────────────────────────────────
 
   async function loadData(whichTab, whichDate) {
     const isRaw      = (whichTab  ?? tabRef.current) === "raw";
@@ -129,7 +140,7 @@ export default function InventoryPage() {
         const incoming_bal = Number(inv?.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(inv?.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal  = beg_bal + incoming_bal - outgoing_bal;
-        return { id: s.id, name: s.name, category_id: s.category_id, warehouse: s.warehouse ?? null,
+        return { id: s.id, name: s.name, category_id: s.category_id, warehouse: s.warehouse,
           beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal, loss,
           _pendingIncoming: tx.incoming, _pendingOutgoing: tx.outgoing };
       });
@@ -142,6 +153,12 @@ export default function InventoryPage() {
       if (!isHistory) { setItems(await getInventorySnapshot(snapKey)); setUsingOffline(true); }
     } finally { setLoading(false); }
   }
+
+  // ─── snapshots ────────────────────────────────────────────────────────────
+  // item_change and session snapshots now also record a `since` timestamp
+  // (ISO string, taken right before the snapshot is saved) so undo knows
+  // the exact cutoff for "transaction log rows created during this change /
+  // session" — used to delete the matching tx rows on undo.
 
   async function saveSnapshot(undoType, whichTab) {
     const isRaw = (whichTab ?? tabRef.current) === "raw";
@@ -156,6 +173,8 @@ export default function InventoryPage() {
       } else {
         before = await getInventorySnapshot(isRaw ? "raw" : "finished");
       }
+      // Local stack entry carries `since` so undoItemChange can delete the
+      // exact tx row(s) created after this point for this item.
       await pushItemChange(t, before, since);
       if (isOnline()) {
         await supabase.from("undo_log").insert({
@@ -166,6 +185,8 @@ export default function InventoryPage() {
       return since;
     }
 
+    // session — online only. Snapshot stores `since` so undoSession can
+    // delete every pending tx row (any source) created at/after this point.
     if (!isOnline()) return since;
     const { data } = await supabase.from(invTable(isRaw)).select("*");
     await supabase.from("undo_log").insert({
@@ -183,27 +204,24 @@ export default function InventoryPage() {
     });
   }
 
+  // Soft-removes pending tx rows for this tab created at/after `since`,
+  // marking them removed_reason: 'undone' instead of hard-deleting — the
+  // row stays visible in Transaction Logs with an "Undone" status badge.
+  // Used by both undoItemChange (fallback path) and undoSession.
+  // Only touches rows that are still pending (finalized_at IS NULL AND
+  // removed_at IS NULL) — a row already finalized or already removed must
+  // never be re-marked, since its effect is either already committed or
+  // already accounted for.
   async function deletePendingTxSince(isRaw, since, inventoryId) {
-    let orderedQuery = supabase
+    let query = supabase
       .from(txTable(isRaw))
       .update({ removed_at: new Date().toISOString(), removed_reason: "undone" })
-      .eq("transaction_source", "ordered")
       .is("finalized_at", null)
       .is("removed_at", null)
       .gte("created_at", since);
-    if (inventoryId) orderedQuery = orderedQuery.eq("inventory_id", inventoryId);
-
-    let manipulatedQuery = supabase
-      .from(txTable(isRaw))
-      .update({ removed_at: new Date().toISOString(), removed_reason: "undone" })
-      .eq("transaction_source", "manipulated")
-      .is("removed_at", null)
-      .gte("created_at", since);
-    if (inventoryId) manipulatedQuery = manipulatedQuery.eq("inventory_id", inventoryId);
-
-    const [orderedRes, manipulatedRes] = await Promise.all([orderedQuery, manipulatedQuery]);
-    if (orderedRes.error)     throw orderedRes.error;
-    if (manipulatedRes.error) throw manipulatedRes.error;
+    if (inventoryId) query = query.eq("inventory_id", inventoryId);
+    const { error } = await query;
+    if (error) throw error;
   }
 
   async function restoreSnapshot(undoType, whichTab) {
@@ -224,11 +242,26 @@ export default function InventoryPage() {
     return { ok: true, snapshot: log.snapshot };
   }
 
+  // ─── boot ─────────────────────────────────────────────────────────────────
+
   useEffect(() => {
     const t = "finished";
     async function boot() {
       await resetDailyIfNeeded();
       await saveSnapshot("session", t);
+
+      // Auto-finalize both tabs if today hasn't been finalized yet.
+      // Runs silently (no confirms, no alerts) — if it fails, the user
+      // can still finalize manually. Both tabs are finalized on boot
+      // regardless of which tab is currently active, so the raw and
+      // finished histories stay in sync at day boundaries.
+      if (isOnline()) {
+        await Promise.all([
+          runFinalize(false, "finished", { silent: true }),
+          runFinalize(true,  "raw",      { silent: true }),
+        ]);
+      }
+
       await Promise.all([
         loadData(t, ""),
         checkUndoAvailability(t),
@@ -267,7 +300,7 @@ export default function InventoryPage() {
         const incoming_bal = Number(inv?.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(inv?.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal  = beg_bal + incoming_bal - outgoing_bal;
-        return { id: s.id, name: s.name, category_id: s.category_id, warehouse: s.warehouse ?? null,
+        return { id: s.id, name: s.name, category_id: s.category_id, warehouse: s.warehouse,
           beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal, loss,
           _pendingIncoming: tx.incoming, _pendingOutgoing: tx.outgoing };
       });
@@ -275,14 +308,19 @@ export default function InventoryPage() {
     } catch (e) { console.error("[InventoryPage] prewarmOtherTab failed:", e); }
   }
 
+  // ─── tab / date changes ───────────────────────────────────────────────────
+
   useEffect(() => {
     if (!booted) return;
     const t = tab, d = date;
     loadData(t, d);
     checkUndoAvailability(t);
     checkFinalizedFor(t);
+    setManipulationError(null); // Clear error when tab/date changes
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, date, booted]);
+
+  // ─── realtime ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
     const rawSub = supabase.channel("raw-tx-live")
@@ -297,6 +335,8 @@ export default function InventoryPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── back online ──────────────────────────────────────────────────────────
+
   useEffect(() => {
     function handleOnline() {
       const t = tabRef.current, d = dateRef.current;
@@ -310,6 +350,19 @@ export default function InventoryPage() {
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
   }, []);
+
+  // ─── undo item ────────────────────────────────────────────────────────────
+  // Reverts the inventory balance change AND deletes the specific tx log
+  // row(s) that this manipulation created (only if still pending — a
+  // finalized row is untouchable since it's already baked into committed
+  // history).
+  //
+  // Primary path: local stack (peekItemChange) — works online + offline.
+  //   The stack entry now carries `since` + the item's inventory_id, so we
+  //   can delete exactly the tx row(s) for that item created at/after that
+  //   timestamp, scoped to this tab's tx table.
+  // Fallback path: undo_log (online only) — same idea, using txInsertedId
+  //   directly if present, otherwise falling back to the `since` cutoff.
 
   async function undoItemChange() {
     if (!confirm("Undo the last item change? This will also remove the related pending order/transaction.")) return;
@@ -341,6 +394,10 @@ export default function InventoryPage() {
         await saveInventorySnapshot(snapKey, merged);
         setItems(merged);
 
+        // Delete the tx row(s) created by this specific manipulation —
+        // only if online (tx log lives in Supabase, not local storage).
+        // Scoped to: this tab's tx table, the reverted item(s)' inventory_id,
+        // created at/after entry.since, and still pending.
         if (isOnline() && entry.since) {
           for (const itemId of revertedIds) {
             try {
@@ -367,6 +424,7 @@ export default function InventoryPage() {
       return;
     }
 
+    // ── fallback: undo_log ────────────────────────────────────────────────
     if (!isOnline()) { alert("No undo snapshot found."); setUndoing(null); return; }
 
     const { data: logs } = await supabase.from("undo_log").select("*")
@@ -381,12 +439,16 @@ export default function InventoryPage() {
       if (error) { alert("Restore failed: " + error.message); setUndoing(null); return; }
     }
 
+    // Prefer the exact inserted tx row id if we have it (most precise).
+    // Otherwise fall back to soft-removing any pending tx row created
+    // at/after the snapshot's `since` timestamp.
     const txId = log.snapshot?.txInsertedId;
     const since = log.snapshot?.since;
     if (txId) {
       await supabase.from(txTable(isRaw))
         .update({ removed_at: new Date().toISOString(), removed_reason: "undone" })
         .eq("id", txId)
+        .is("finalized_at", null)
         .is("removed_at", null);
     } else if (since) {
       try { await deletePendingTxSince(isRaw, since); }
@@ -401,6 +463,12 @@ export default function InventoryPage() {
     await checkFinalizedFor(t);
   }
 
+  // ─── undo session ─────────────────────────────────────────────────────────
+  // Reverts inventory to the session-start snapshot AND deletes every
+  // pending tx row (any transaction_source — ordered or manipulated) for
+  // this tab created at/after the session snapshot's `since` timestamp.
+  // Finalized rows are never touched.
+
   async function undoSession() {
     if (!confirm("Undo all changes made this session? This will also remove every pending order/transaction created this session.")) return;
     const t = tabRef.current, isRaw = t === "raw";
@@ -412,7 +480,7 @@ export default function InventoryPage() {
     const since = result.snapshot?.since;
     if (since) {
       try {
-        await deletePendingTxSince(isRaw, since);
+        await deletePendingTxSince(isRaw, since); // no inventoryId filter — whole tab
       } catch (e) {
         alert("Inventory restored but failed to remove this session's pending orders: " + e.message);
       }
@@ -423,6 +491,8 @@ export default function InventoryPage() {
     await checkUndoAvailability(t);
     await checkFinalizedFor(t);
   }
+
+  // ─── undo close day ───────────────────────────────────────────────────────
 
   async function undoCloseDay() {
     if (!confirm("Undo the last Finalize? Balances will be restored and today's orders will become pending again.")) return;
@@ -455,33 +525,60 @@ export default function InventoryPage() {
     if (dateRef.current !== "") setDate("");
   }
 
-  async function finalizeDay() {
-    if (!isOnline()) { alert("Finalize requires an internet connection."); return; }
-    const t = tabRef.current, isRaw = t === "raw", today = todayLocal();
+  // ─── finalize day ─────────────────────────────────────────────────────────
 
+  // ─── runFinalize ──────────────────────────────────────────────────────────
+  // Core finalize logic, used by both the manual button (silent=false, shows
+  // confirms and alerts) and the auto-finalize on boot (silent=true, runs
+  // without any user prompts).
+  //
+  // Roll-forward rule: next day's beg_bal = today's actual_bal.
+  // This reflects the physically counted balance, not the computed one —
+  // if someone counted 80 units but current said 90, the next day starts at 80.
+
+  async function runFinalize(isRaw, t, { silent = false } = {}) {
+    if (!isOnline()) {
+      if (!silent) alert("Finalize requires an internet connection.");
+      return false;
+    }
+    const today = todayLocal();
+
+    // Skip if already finalized today
     const { data: existing } = await supabase.from(histTable(isRaw)).select("id")
       .eq("inventory_date", today).limit(1);
-    if (existing?.length) { alert("Today has already been finalized."); setAlreadyFinalized(true); return; }
+    if (existing?.length) {
+      if (!silent) { alert("Today has already been finalized."); setAlreadyFinalized(true); }
+      else setAlreadyFinalized(true);
+      return false;
+    }
 
-    const { data: pending, error: pErr } = await supabase.from(txTable(isRaw))
-      .select("id").is("finalized_at", null).is("removed_at", null).limit(1);
-    if (pErr) { alert("Could not check pending orders: " + pErr.message); return; }
+    // Confirm prompt — skipped in silent/auto mode
+    if (!silent) {
+      const { data: pending } = await supabase.from(txTable(isRaw))
+        .select("id").is("finalized_at", null).is("removed_at", null).limit(1);
+      const confirmed = (pending?.length)
+        ? confirm("Finalize today's data and roll balances forward?")
+        : confirm("⚠️ No pending orders found for today.\n\nFinalizing now will roll the balance forward with no new movement.\n\nContinue anyway?");
+      if (!confirmed) return false;
+    }
 
-    const confirmed = (pending?.length)
-      ? confirm("Finalize today's data and roll balances forward?")
-      : confirm("⚠️ No pending orders found for today.\n\nFinalizing now will roll the balance forward with no new movement.\n\nContinue anyway?");
-    if (!confirmed) return;
-
-    setFinalizing(true);
     try {
-      const { data: txRows,   error: e1 } = await supabase.from(txTable(isRaw)).select("id, inventory_id, incoming_bal, outgoing_bal").is("finalized_at", null).is("removed_at", null);
+      // CRITICAL: exclude removed rows — deleted/undone orders must never
+      // be folded into committed balances.
+      const { data: txRows, error: e1 } = await supabase
+        .from(txTable(isRaw))
+        .select("id, inventory_id, incoming_bal, outgoing_bal")
+        .is("finalized_at", null)
+        .is("removed_at", null);
       if (e1) throw e1;
-      const { data: allInv,   error: e2 } = await supabase.from(invTable(isRaw)).select("*");
+
+      const { data: allInv, error: e2 } = await supabase.from(invTable(isRaw)).select("*");
       if (e2) throw e2;
 
       const finalizedTxIds = (txRows || []).map((r) => r.id);
       await saveCloseDaySnapshot(isRaw, t, finalizedTxIds, today);
 
+      // Sum pending tx per inventory_id
       const totals = {};
       (txRows || []).forEach(({ inventory_id, incoming_bal, outgoing_bal }) => {
         if (!totals[inventory_id]) totals[inventory_id] = { incoming: 0, outgoing: 0 };
@@ -489,6 +586,7 @@ export default function InventoryPage() {
         totals[inventory_id].outgoing += Number(outgoing_bal ?? 0);
       });
 
+      // Compute today's final values for every inventory row
       const finalRows = (allInv || []).map((row) => {
         const tt = totals[row.id];
         if (!tt) return row;
@@ -500,47 +598,89 @@ export default function InventoryPage() {
         return { ...row, incoming_bal, outgoing_bal, current_bal, actual_bal, loss };
       });
 
+      // Write today's final values to the live inventory table
       const { error: e3 } = await supabase.from(invTable(isRaw)).upsert(finalRows, { onConflict: "id" });
       if (e3) throw e3;
 
+      // Snapshot today into history — upsert so a partial or repeated
+      // finalize (e.g. auto-finalize finding a row already written by a
+      // manual finalize earlier today) updates in place instead of throwing
+      // a duplicate-key error on the unique (inventory_id, inventory_date) constraint.
       const histRows = finalRows.map((row) => ({
         inventory_id: row.id, inventory_date: today, name: row.name,
         beg_bal: row.beg_bal, incoming_bal: row.incoming_bal, outgoing_bal: row.outgoing_bal,
         current_bal: row.current_bal, actual_bal: row.actual_bal, loss: row.loss,
       }));
-      const { error: e4 } = await supabase.from(histTable(isRaw)).insert(histRows);
+      const { error: e4 } = await supabase.from(histTable(isRaw))
+        .upsert(histRows, { onConflict: "inventory_id, inventory_date" });
       if (e4) throw e4;
 
+      // Mark tx rows as finalized so they stop appearing as pending
       if (finalizedTxIds.length) {
         const { error: e5 } = await supabase.from(txTable(isRaw))
           .update({ finalized_at: new Date().toISOString() }).in("id", finalizedTxIds);
         if (e5) throw e5;
       }
 
+      // Roll forward: next day starts with beg_bal = today's actual_bal
+      // (the physically counted amount, not the computed current_bal).
+      // incoming/outgoing reset to 0 — new day, clean movement slate.
       const rolled = finalRows.map((row) => ({
-        id: row.id, name: row.name, beg_bal: row.current_bal,
-        incoming_bal: 0, outgoing_bal: 0, current_bal: row.current_bal,
-        actual_bal: row.actual_bal, loss: row.loss,
+        id:           row.id,
+        name:         row.name,
+        beg_bal:      row.actual_bal,   // ← actual count, not computed current
+        incoming_bal: 0,
+        outgoing_bal: 0,
+        current_bal:  row.actual_bal,   // current = beg until new orders arrive
+        actual_bal:   row.actual_bal,
+        loss:         row.loss,
       }));
       const { error: e6 } = await supabase.from(invTable(isRaw)).upsert(rolled, { onConflict: "id" });
       if (e6) throw e6;
 
+      setAlreadyFinalized(true);
+      return true;
+    } catch (e) {
+      if (!silent) alert("Failed to finalize: " + e.message);
+      else console.error("[runFinalize] auto-finalize failed:", e.message);
+      return false;
+    }
+  }
+
+  // ─── Manual finalize button ───────────────────────────────────────────────
+
+  async function finalizeDay() {
+    const t = tabRef.current, isRaw = t === "raw";
+    setFinalizing(true);
+    const ok = await runFinalize(isRaw, t, { silent: false });
+    setFinalizing(false);
+    if (ok) {
       await checkFinalizedFor(t);
       await loadData(t, "");
       await checkUndoAvailability(t);
-      alert("Finalized. Balances rolled forward and history saved.");
-    } catch (e) {
-      alert("Failed to finalize: " + e.message);
+      alert("Finalized. Balances rolled forward. Tomorrow's beginning balance = today's actual count.");
+    } else {
       await checkFinalizedFor(t);
-    } finally { setFinalizing(false); }
+    }
   }
 
+  // ─── manipulation ─────────────────────────────────────────────────────────
+  // updateFn returns the tx log row id (or null if offline/failed).
+
   function requestManipulationUpdate(updateFn) {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (alreadyFinalized) {
+      setManipulationError("⚠️ Today is finalized. You cannot edit inventory balances. Please undo the finalize or wait until tomorrow.");
+      return;
+    }
+
     const t = tabRef.current;
     (async () => {
       const since = await saveSnapshot("item_change", t);
       const insertedTxId = await updateFn();
 
+      // Attach insertedTxId AND since to the undo_log row so the fallback
+      // undo path can use the exact id (preferred) or the cutoff (backup).
       if (isOnline()) {
         const { data: lg } = await supabase.from("undo_log").select("id, snapshot")
           .eq("tab", t).eq("undo_type", "item_change")
@@ -554,6 +694,12 @@ export default function InventoryPage() {
         }
       }
 
+      // Also attach `since` + txInsertedId to the local stack entry so the
+      // primary undo path (peekItemChange) has what it needs even offline.
+      // pushItemChange already stored `since`; nothing further needed there
+      // since undoItemChange deletes by item_id + since, not by exact txId,
+      // for the local-stack path.
+
       if (insertedTxId !== null && isOnline()) {
         await loadData(t, dateRef.current);
       }
@@ -562,9 +708,22 @@ export default function InventoryPage() {
     })();
   }
 
+  // ─── Handle item selection with finalization check ──────────────────────
+
+  function handleSelectItem(item) {
+    if (alreadyFinalized && date === "") {
+      setManipulationError("🔒 Today is finalized. You cannot edit inventory balances. Please undo the finalize or wait until tomorrow.");
+      return;
+    }
+    setManipulationError(null);
+    setActiveItem(item);
+  }
+
   const applyLocalPatch = useCallback((itemId, patch) => {
     setItems((prev) => prev.map((it) => it.id === itemId ? { ...it, ...patch } : it));
   }, []);
+
+  // ─── render ───────────────────────────────────────────────────────────────
 
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
@@ -576,6 +735,28 @@ export default function InventoryPage() {
       {usingOffline && (
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
           Showing locally saved data — you're offline. Changes will sync when wifi returns.
+        </div>
+      )}
+
+      {/* ─── FINALIZATION LOCK BANNER ─── */}
+      {alreadyFinalized && date === "" && (
+        <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="text-lg">🔒</span>
+            <div>
+              <p className="font-semibold">Today is finalized — Inventory is locked</p>
+              <p className="text-xs mt-1 text-red-700">
+                You cannot edit inventory balances for today. Go to the Undo section below to <strong>↩ Finalize</strong> if you need to make changes, or wait until tomorrow.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MANIPULATION ERROR MESSAGE ─── */}
+      {manipulationError && (
+        <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-4 py-2.5 text-sm text-red-700">
+          {manipulationError}
         </div>
       )}
 
@@ -633,8 +814,17 @@ export default function InventoryPage() {
         </div>
       </div>
 
+      <div className="mb-4">
+        <InventorySummary tab={tab} />
+      </div>
+
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-        <InventoryTable items={items} loading={loading} onSelect={setActiveItem} />
+        <InventoryTable 
+          items={items} 
+          loading={loading} 
+          onSelect={handleSelectItem}
+          isFinalized={alreadyFinalized && date === ""}
+        />
       </div>
 
       {activeItem && (
@@ -644,6 +834,7 @@ export default function InventoryPage() {
           onClose={() => setActiveItem(null)}
           onUpdated={(fn) => requestManipulationUpdate(fn)}
           onLocalPatch={applyLocalPatch}
+          isFinalized={alreadyFinalized && date === ""}
         />
       )}
     </div>

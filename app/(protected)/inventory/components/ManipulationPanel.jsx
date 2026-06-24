@@ -88,7 +88,7 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   );
 }
 
-export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocalPatch }) {
+export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocalPatch, isFinalized = false }) {
   const supabase = createClient();
 
   const isRaw       = tab === "raw";
@@ -259,6 +259,12 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   // ── Apply IN / OUT ────────────────────────────────────────────────────────
 
   async function applyChange() {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (isFinalized) {
+      setTxError("🔒 Today is finalized. You cannot edit inventory.");
+      return;
+    }
+
     if (!validate()) return;
     const q    = Number(qty);
     const mode = isIncoming ? "in" : "out";
@@ -324,6 +330,12 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   // ── Set actual count ──────────────────────────────────────────────────────
 
   async function setActualValue() {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (isFinalized) {
+      setTxError("🔒 Today is finalized. You cannot edit inventory.");
+      return;
+    }
+
     if (actual === "") return;
     if (!monitoringEmployee) { setTxError("Select a monitoring employee."); return; }
     setTxError(null);
@@ -415,7 +427,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   // ── Admin panel ───────────────────────────────────────────────────────────
 
   return (
-    <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10 max-h-[90vh] overflow-y-auto">
+    <div className={`fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10 max-h-[90vh] overflow-y-auto transition-opacity ${isFinalized ? "opacity-60 pointer-events-none" : ""}`}>
 
       {/* Header */}
       <div className="flex justify-between items-start mb-3">
@@ -427,6 +439,17 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         </div>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-2 shrink-0">✕</button>
       </div>
+
+      {/* ─── FINALIZATION LOCK BANNER FOR PANEL ─── */}
+      {isFinalized && (
+        <div className="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <div className="font-semibold flex items-center gap-1">
+            <span>🔒</span>
+            Panel Locked
+          </div>
+          <p className="mt-1 text-red-600">Today is finalized. Undo to make changes.</p>
+        </div>
+      )}
 
       {/* Offline banner */}
       {offlineMode && (
@@ -471,17 +494,19 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         <div className="flex rounded-md border border-gray-200 overflow-hidden mb-3">
           <button
             onClick={() => { setStockMode("incoming"); setQty(""); setTxError(null); setSupplierName(""); setRepresentativeEmployee(""); setStaffEmployee(""); }}
+            disabled={isFinalized}
             className={`flex-1 py-1.5 text-xs font-medium transition-colors ${
               isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
+            } ${isFinalized ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             ↓ Incoming
           </button>
           <button
             onClick={() => { setStockMode("outgoing"); setQty(""); setTxError(null); setSupplierName(""); }}
+            disabled={isFinalized}
             className={`flex-1 py-1.5 text-xs font-medium border-l border-gray-200 transition-colors ${
               !isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
+            } ${isFinalized ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             ↑ Outgoing
           </button>
@@ -496,6 +521,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             options={monitoringOptions}
             onChange={(v) => { setMonitoringEmployee(v); setTxError(null); }}
             placeholder="Select monitoring employee…"
+            disabled={isFinalized}
           />
 
           {/* Representative — outgoing only (required), optional incoming */}
@@ -506,6 +532,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
               options={representativeOptions}
               onChange={(v) => { setRepresentativeEmployee(v); setTxError(null); }}
               placeholder="Select representative employee…"
+              disabled={isFinalized}
             />
           )}
 
@@ -517,7 +544,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
               options={staffOptions}
               onChange={(v) => { setStaffEmployee(v); setTxError(null); }}
               placeholder={staffOptions.length ? "Select staff…" : "No staff found — add one in Employees"}
-              disabled={staffOptions.length === 0}
+              disabled={isFinalized || staffOptions.length === 0}
             />
           )}
 
@@ -529,6 +556,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
               options={supplierOptions}
               onChange={(v) => { setSupplierName(v); setTxError(null); }}
               placeholder="Select supplier…"
+              disabled={isFinalized}
             />
           )}
 
@@ -543,7 +571,8 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
               placeholder="0"
               type="number"
               min="0"
-              className="border p-2 w-full rounded text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              disabled={isFinalized}
+              className={`border p-2 w-full rounded text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFinalized ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""}`}
             />
           </div>
 
@@ -551,10 +580,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
           <button
             onClick={applyChange}
-            disabled={saving}
-            className={`w-full py-2 rounded text-sm font-medium text-white transition-colors disabled:opacity-50 ${
+            disabled={saving || isFinalized}
+            className={`w-full py-2 rounded text-sm font-medium text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               isIncoming ? "bg-green-600 hover:bg-green-700" : "bg-red-600 hover:bg-red-700"
             }`}
+            title={isFinalized ? "Panel locked — undo finalize to edit" : ""}
           >
             {saving ? "Saving…" : isIncoming ? "+ Apply Incoming" : "− Apply Outgoing"}
           </button>
@@ -580,7 +610,8 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             placeholder="Physical count…"
             type="number"
             min="0"
-            className="border p-2 w-full rounded text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            disabled={isFinalized}
+            className={`border p-2 w-full rounded text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFinalized ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""}`}
           />
         </div>
 
@@ -592,8 +623,9 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
         <button
           onClick={setActualValue}
-          disabled={saving}
-          className="bg-purple-600 hover:bg-purple-700 text-white w-full py-2 rounded text-sm font-medium transition-colors disabled:opacity-50"
+          disabled={saving || isFinalized}
+          className="bg-purple-600 hover:bg-purple-700 text-white w-full py-2 rounded text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          title={isFinalized ? "Panel locked — undo finalize to edit" : ""}
         >
           {saving ? "Saving…" : "Update Actual Count"}
         </button>

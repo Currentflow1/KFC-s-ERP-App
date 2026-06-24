@@ -23,6 +23,11 @@ function emptyForm() {
   };
 }
 
+function todayLocal() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function ConfirmModal({ message, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
@@ -113,6 +118,8 @@ export default function OrderTable() {
   const [search, setSearch]           = useState("");
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [offline, setOffline]         = useState(false);
+  const [isFinalized, setIsFinalized] = useState(false);
+  const [checkingFinalization, setCheckingFinalization] = useState(false);
 
   const [monitoringOptions, setMonitoringOptions]         = useState([]);
   const [representativeOptions, setRepresentativeOptions] = useState([]);
@@ -129,6 +136,7 @@ export default function OrderTable() {
 
   const txTableName  = isRaw ? "raw_materials_transaction_log"  : "finished_products_transaction_log";
   const invTableName = isRaw ? "raw_materials_inventory"        : "finished_products_inventory";
+  const histTableName = isRaw ? "raw_materials_inventory_history" : "finished_products_inventory_history";
 
   // All unique warehouses for the active product type (null/empty excluded)
   const warehouseOptions = useMemo(() => {
@@ -162,8 +170,38 @@ export default function OrderTable() {
     };
   }, []);
 
-  useEffect(() => { fetchOptions(); }, []);
-  useEffect(() => { fetchRows(); resetForm(); }, [productType, stockType]);
+  // ─── Check if today is already finalized ────────────────────────────────
+
+  async function checkIfTodayFinalized() {
+    if (!isOnline()) return;
+    setCheckingFinalization(true);
+    try {
+      const today = todayLocal();
+      const { data, error } = await supabase
+        .from(histTableName)
+        .select("id")
+        .eq("inventory_date", today)
+        .limit(1);
+      
+      if (error) throw error;
+      setIsFinalized(!!(data && data.length > 0));
+    } catch (e) {
+      console.error("Failed to check finalization status:", e.message);
+    } finally {
+      setCheckingFinalization(false);
+    }
+  }
+
+  useEffect(() => { 
+    fetchOptions(); 
+    checkIfTodayFinalized();
+  }, []);
+
+  useEffect(() => { 
+    fetchRows(); 
+    resetForm(); 
+    checkIfTodayFinalized();
+  }, [productType, stockType]);
 
   async function fetchOptions() {
     if (!isOnline()) return;
@@ -277,6 +315,12 @@ export default function OrderTable() {
   }
 
   async function handleAdd() {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (isFinalized) {
+      setError("⚠️ Today is already finalized. You cannot add new orders. Please undo the finalize or wait until tomorrow.");
+      return;
+    }
+
     if (!isOnline()) { setError("You're offline — reconnect to add an order."); return; }
     setError(null);
     const qty = Number(isIncoming ? formData.incoming_bal : formData.outgoing_bal);
@@ -318,6 +362,12 @@ export default function OrderTable() {
   }
 
   async function handleEditSave(id) {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (isFinalized) {
+      setError("⚠️ Today is already finalized. You cannot edit orders. Please undo the finalize or wait until tomorrow.");
+      return;
+    }
+
     if (!isOnline()) { setError("You're offline — reconnect to save changes."); return; }
     setError(null);
     setSaving(true);
@@ -354,6 +404,13 @@ export default function OrderTable() {
   }
 
   async function confirmDelete() {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (isFinalized) {
+      setError("⚠️ Today is already finalized. You cannot delete orders. Please undo the finalize or wait until tomorrow.");
+      setDeleteTarget(null);
+      return;
+    }
+
     if (!isOnline()) {
       setError("You're offline — reconnect to delete this order.");
       setDeleteTarget(null);
@@ -377,10 +434,17 @@ export default function OrderTable() {
   }
 
   function handleEditStart(row) {
+    // ─── FINALIZATION SAFETY CHECK ───
+    if (isFinalized) {
+      setError("⚠️ Today is already finalized. You cannot edit orders. Please undo the finalize or wait until tomorrow.");
+      return;
+    }
+
     if (!isOnline()) { setError("You're offline — reconnect to edit this order."); return; }
     setEditingId(row.id);
     setEditData({ ...row, warehouse: "" });
   }
+
   function handleEditChange(field, value) { setEditData((prev) => ({ ...prev, [field]: value })); }
 
   const filteredRows = rows
@@ -409,6 +473,21 @@ export default function OrderTable() {
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
           <span className="font-semibold">You're offline.</span> Order Table requires an internet
           connection — adding, editing, and deleting orders are disabled until you reconnect.
+        </div>
+      )}
+
+      {/* ─── FINALIZATION LOCK BANNER ─── */}
+      {isFinalized && (
+        <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">
+          <div className="flex items-start gap-3">
+            <span className="text-lg">🔒</span>
+            <div>
+              <p className="font-semibold">Today is finalized — Order Table is locked</p>
+              <p className="text-xs mt-1 text-red-700">
+                You cannot add, edit, or delete orders for today. Go to the Inventory page to <strong>Undo Finalize</strong> if you need to make changes, or wait until tomorrow to add new orders.
+              </p>
+            </div>
+          </div>
         </div>
       )}
 
@@ -446,7 +525,7 @@ export default function OrderTable() {
       )}
 
       {/* ── Add form ── */}
-      <div className="bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-5">
+      <div className={`bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-5 transition-opacity ${isFinalized ? "opacity-60" : ""}`}>
         <h2 className="text-sm font-semibold text-gray-900 mb-4">
           {isIncoming ? "Add Incoming Order" : "Add Outgoing Order"}
           <span className="ml-2 text-gray-400 font-normal">— {isRaw ? "Raw Materials" : "Finished Products"}</span>
@@ -454,33 +533,33 @@ export default function OrderTable() {
 
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
           <SearchableSelect label="Monitoring" value={formData.monitoring_employee}
-            options={monitoringOptions} disabled={offline}
+            options={monitoringOptions} disabled={offline || isFinalized}
             onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))} />
 
           {!isIncoming && (
             <SearchableSelect label="Representative" value={formData.representative_employee}
-              options={representativeOptions} disabled={offline}
+              options={representativeOptions} disabled={offline || isFinalized}
               onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))} />
           )}
 
           {!isIncoming && (
             <SearchableSelect label="Staff" value={formData.staff_employee}
-              options={staffOptions} disabled={offline}
+              options={staffOptions} disabled={offline || isFinalized}
               onChange={(v) => setFormData((p) => ({ ...p, staff_employee: v }))} />
           )}
 
           {showSupplier && (
             <SearchableSelect label="Supplier" value={formData.supplier_name}
-              options={supplierOptions} disabled={offline}
+              options={supplierOptions} disabled={offline || isFinalized}
               onChange={(v) => setFormData((p) => ({ ...p, supplier_name: v }))} />
           )}
 
           {/* Warehouse — picking this filters the product list below */}
           <SearchableSelect
-            label="Warehouse (optional)"
+            label="Warehouse"
             value={formData.warehouse}
             options={warehouseOptions}
-            disabled={offline || warehouseOptions.length === 0}
+            disabled={offline || isFinalized || warehouseOptions.length === 0}
             placeholder={warehouseOptions.length === 0 ? "No warehouses set" : "All warehouses"}
             onChange={handleWarehouseChange}
           />
@@ -490,7 +569,7 @@ export default function OrderTable() {
             label={formData.warehouse ? `Product (${formData.warehouse})` : "Product"}
             value={formData.product_name}
             options={productOptions}
-            disabled={offline}
+            disabled={offline || isFinalized}
             onChange={(v) => setFormData((p) => ({ ...p, product_name: v }))}
           />
 
@@ -498,7 +577,7 @@ export default function OrderTable() {
             <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
               {isIncoming ? "Incoming Qty" : "Outgoing Qty"}
             </label>
-            <input type="number" min="0" placeholder="0" disabled={offline}
+            <input type="number" min="0" placeholder="0" disabled={offline || isFinalized}
               className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
               value={isIncoming ? formData.incoming_bal : formData.outgoing_bal}
               onChange={(e) => setFormData((p) => ({
@@ -509,8 +588,9 @@ export default function OrderTable() {
         </div>
 
         <div className="mt-4 flex justify-end">
-          <button onClick={handleAdd} disabled={saving || offline}
-            className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
+          <button onClick={handleAdd} disabled={saving || offline || isFinalized}
+            className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+            title={isFinalized ? "Order Table is locked — undo finalize to add orders" : ""}>
             {saving ? "Saving…" : "Add Order"}
           </button>
         </div>
@@ -622,17 +702,19 @@ export default function OrderTable() {
                       <td className="px-4 py-3">
                         {isEditing ? (
                           <div className="inline-flex items-center gap-1">
-                            <button onClick={() => handleEditSave(row.id)} disabled={saving || offline}
+                            <button onClick={() => handleEditSave(row.id)} disabled={saving || offline || isFinalized}
                               className="px-3 py-1.5 text-xs font-medium bg-green-600 hover:bg-green-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Save</button>
                             <button onClick={() => setEditingId(null)}
                               className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors">Cancel</button>
                           </div>
                         ) : (
                           <div className="inline-flex items-center gap-1">
-                            <button onClick={() => handleEditStart(row)} disabled={offline}
-                              className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Edit</button>
-                            <button onClick={() => setDeleteTarget(row.id)} disabled={offline}
-                              className="px-3 py-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Delete</button>
+                            <button onClick={() => handleEditStart(row)} disabled={offline || isFinalized}
+                              className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                              title={isFinalized ? "Order Table is locked" : ""}>Edit</button>
+                            <button onClick={() => setDeleteTarget(row.id)} disabled={offline || isFinalized}
+                              className="px-3 py-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+                              title={isFinalized ? "Order Table is locked" : ""}>Delete</button>
                           </div>
                         )}
                       </td>
