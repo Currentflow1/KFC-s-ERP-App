@@ -102,11 +102,8 @@ function MonitoringTable() {
   async function load() {
     const supabase = createClient();
     setLoading(true);
-    const { data } = await supabase
-      .from("monitoring_employee")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setRows(data ?? []);
+    const { data } = await supabase.from("monitoring_employee").select("*");
+    setRows((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
     setLoading(false);
   }
 
@@ -143,8 +140,6 @@ function MonitoringTable() {
 
   return (
     <div className="bg-white text-gray-900 border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-
-      {/* Section header */}
       <div
         onClick={() => setOpen((p) => !p)}
         className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
@@ -157,10 +152,7 @@ function MonitoringTable() {
           </div>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={openAdd}
-            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
-          >
+          <button onClick={openAdd} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors">
             + Add employee
           </button>
         </div>
@@ -168,7 +160,6 @@ function MonitoringTable() {
 
       {open && (
         <>
-          {/* Control bar */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 bg-gray-50">
             <input
               value={search}
@@ -176,17 +167,10 @@ function MonitoringTable() {
               placeholder="Search by name or role…"
               className="w-full max-w-sm border border-gray-200 rounded-md px-3 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            {search && (
-              <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
-            )}
-            {!loading && (
-              <span className="ml-auto text-xs text-gray-400 shrink-0">
-                {filtered.length} {filtered.length === 1 ? "employee" : "employees"}
-              </span>
-            )}
+            {search && <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>}
+            {!loading && <span className="ml-auto text-xs text-gray-400 shrink-0">{filtered.length} {filtered.length === 1 ? "employee" : "employees"}</span>}
           </div>
 
-          {/* Table */}
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
@@ -213,13 +197,9 @@ function MonitoringTable() {
                       </div>
                     </td>
                     <td className="px-4 py-3">
-                      <span className="inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-                        {row.role}
-                      </span>
+                      <span className="inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">{row.role}</span>
                     </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {new Date(row.created_at).toLocaleDateString()}
-                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{new Date(row.created_at).toLocaleDateString()}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button onClick={() => openEdit(row)} className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded-md transition-colors">Edit</button>
@@ -276,11 +256,8 @@ function RepresentativeTable() {
   async function load() {
     const supabase = createClient();
     setLoading(true);
-    const { data } = await supabase
-      .from("representative_employee")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setRows(data ?? []);
+    const { data } = await supabase.from("representative_employee").select("*");
+    setRows((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
     setLoading(false);
   }
 
@@ -317,8 +294,6 @@ function RepresentativeTable() {
 
   return (
     <div className="bg-white text-gray-900 border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-
-      {/* Section header */}
       <div
         onClick={() => setOpen((p) => !p)}
         className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
@@ -331,10 +306,7 @@ function RepresentativeTable() {
           </div>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={openAdd}
-            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
-          >
+          <button onClick={openAdd} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors">
             + Add employee
           </button>
         </div>
@@ -342,7 +314,6 @@ function RepresentativeTable() {
 
       {open && (
         <>
-          {/* Control bar */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 bg-gray-50">
             <input
               value={search}
@@ -350,17 +321,10 @@ function RepresentativeTable() {
               placeholder="Search by name or products…"
               className="w-full max-w-sm border border-gray-200 rounded-md px-3 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            {search && (
-              <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
-            )}
-            {!loading && (
-              <span className="ml-auto text-xs text-gray-400 shrink-0">
-                {filtered.length} {filtered.length === 1 ? "employee" : "employees"}
-              </span>
-            )}
+            {search && <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>}
+            {!loading && <span className="ml-auto text-xs text-gray-400 shrink-0">{filtered.length} {filtered.length === 1 ? "employee" : "employees"}</span>}
           </div>
 
-          {/* Table */}
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
@@ -389,15 +353,11 @@ function RepresentativeTable() {
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-1">
                         {row.products.split(",").map((p) => (
-                          <span key={p} className="inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full bg-green-50 text-green-700">
-                            {p.trim()}
-                          </span>
+                          <span key={p} className="inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full bg-green-50 text-green-700">{p.trim()}</span>
                         ))}
                       </div>
                     </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {new Date(row.created_at).toLocaleDateString()}
-                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{new Date(row.created_at).toLocaleDateString()}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button onClick={() => openEdit(row)} className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded-md transition-colors">Edit</button>
@@ -446,7 +406,7 @@ function StaffTable() {
   const [editRow, setEditRow] = useState(null);
   const [deleteRow, setDeleteRow] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: "", product: "" });
+  const [form, setForm] = useState({ name: "" });
   const [error, setError] = useState("");
 
   useEffect(() => { load(); }, []);
@@ -454,22 +414,19 @@ function StaffTable() {
   async function load() {
     const supabase = createClient();
     setLoading(true);
-    const { data } = await supabase
-      .from("staff_employee")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setRows(data ?? []);
+    const { data } = await supabase.from("staff_employee").select("*");
+    setRows((data ?? []).sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "")));
     setLoading(false);
   }
 
-  function openAdd() { setForm({ name: "", product: "" }); setError(""); setShowAdd(true); }
-  function openEdit(row) { setForm({ name: row.name ?? "", product: row.product ?? "" }); setError(""); setEditRow(row); }
+  function openAdd() { setForm({ name: "" }); setError(""); setShowAdd(true); }
+  function openEdit(row) { setForm({ name: row.name ?? "" }); setError(""); setEditRow(row); }
 
   async function save() {
     const supabase = createClient();
     if (!form.name.trim()) { setError("Name is required."); return; }
     setSaving(true); setError("");
-    const payload = { name: form.name.trim(), product: form.product.trim() || null };
+    const payload = { name: form.name.trim() };
     if (editRow) {
       const { error: e } = await supabase.from("staff_employee").update(payload).eq("id", editRow.id);
       if (e) { setError(e.message); setSaving(false); return; }
@@ -489,15 +446,11 @@ function StaffTable() {
   }
 
   const filtered = rows.filter(
-    (r) =>
-      (r.name ?? "").toLowerCase().includes(search.toLowerCase()) ||
-      (r.product ?? "").toLowerCase().includes(search.toLowerCase())
+    (r) => (r.name ?? "").toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <div className="bg-white text-gray-900 border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-
-      {/* Section header */}
       <div
         onClick={() => setOpen((p) => !p)}
         className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer"
@@ -510,10 +463,7 @@ function StaffTable() {
           </div>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
-          <button
-            onClick={openAdd}
-            className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors"
-          >
+          <button onClick={openAdd} className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors">
             + Add employee
           </button>
         </div>
@@ -521,39 +471,30 @@ function StaffTable() {
 
       {open && (
         <>
-          {/* Control bar */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-gray-200 bg-gray-50">
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search by name or product…"
+              placeholder="Search by name…"
               className="w-full max-w-sm border border-gray-200 rounded-md px-3 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            {search && (
-              <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
-            )}
-            {!loading && (
-              <span className="ml-auto text-xs text-gray-400 shrink-0">
-                {filtered.length} {filtered.length === 1 ? "employee" : "employees"}
-              </span>
-            )}
+            {search && <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>}
+            {!loading && <span className="ml-auto text-xs text-gray-400 shrink-0">{filtered.length} {filtered.length === 1 ? "employee" : "employees"}</span>}
           </div>
 
-          {/* Table */}
           <table className="w-full text-sm">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Employee</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Product</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Added</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td colSpan={4} className="px-4 py-4 text-sm text-gray-400">Loading…</td></tr>
+                <tr><td colSpan={3} className="px-4 py-4 text-sm text-gray-400">Loading…</td></tr>
               ) : filtered.length === 0 ? (
-                <tr><td colSpan={4} className="px-4 py-8 text-sm text-gray-400 text-center">
+                <tr><td colSpan={3} className="px-4 py-8 text-sm text-gray-400 text-center">
                   {search ? `No employees matching "${search}"` : "No staff employees yet"}
                 </td></tr>
               ) : (
@@ -565,22 +506,7 @@ function StaffTable() {
                         <span className="font-medium text-gray-900">{row.name || "—"}</span>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
-                      {row.product ? (
-                        <div className="flex flex-wrap gap-1">
-                          {row.product.split(",").map((p) => (
-                            <span key={p} className="inline-flex items-center text-xs font-medium px-2 py-0.5 rounded-full bg-purple-50 text-purple-700">
-                              {p.trim()}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <span className="text-xs text-gray-400">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {new Date(row.created_at).toLocaleDateString()}
-                    </td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">{new Date(row.created_at).toLocaleDateString()}</td>
                     <td className="px-4 py-3 text-right">
                       <div className="inline-flex items-center gap-1">
                         <button onClick={() => openEdit(row)} className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded-md transition-colors">Edit</button>
@@ -597,13 +523,13 @@ function StaffTable() {
 
       {showAdd && (
         <Modal title="Add staff employee" onClose={() => setShowAdd(false)}>
-          <FormFields form={form} setForm={setForm} fields={["name", "product"]} error={error} hints={{ product: "Optional — separate multiple products with commas" }} />
+          <FormFields form={form} setForm={setForm} fields={["name"]} error={error} />
           <ModalActions onCancel={() => setShowAdd(false)} onSave={save} saving={saving} />
         </Modal>
       )}
       {editRow && (
         <Modal title="Edit staff employee" onClose={() => setEditRow(null)}>
-          <FormFields form={form} setForm={setForm} fields={["name", "product"]} error={error} hints={{ product: "Optional — separate multiple products with commas" }} />
+          <FormFields form={form} setForm={setForm} fields={["name"]} error={error} />
           <ModalActions onCancel={() => setEditRow(null)} onSave={save} saving={saving} />
         </Modal>
       )}

@@ -4,7 +4,7 @@ import { useState } from "react";
 
 const LOW_STOCK_THRESHOLD = 100;
 
-export default function InventoryTable({ items, loading, onSelect }) {
+export default function InventoryTable({ items, loading, onSelect, warehouseFilter = [] }) {
   const [search, setSearch] = useState("");
 
   if (loading) return <div className="p-6 text-sm text-gray-400">Loading…</div>;
@@ -62,13 +62,27 @@ export default function InventoryTable({ items, loading, onSelect }) {
           ) : (
             filtered.map((i) => {
               const lowStock = Number(i.current_bal) < LOW_STOCK_THRESHOLD;
+              const warehouse = i.warehouse ?? "—";
+              const isFiltered = warehouseFilter.length > 0 && warehouseFilter.includes(i.warehouse);
 
               return (
                 <tr
                   key={i.id}
                   className={`hover:bg-gray-50 transition-colors ${lowStock ? "bg-red-50/60" : ""}`}
                 >
-                  <td className="px-4 py-3 text-gray-500">{i.warehouse ?? "—"}</td>
+                  <td className="px-4 py-3">
+                    {warehouse !== "—" ? (
+                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        isFiltered
+                          ? "bg-blue-600 text-white"
+                          : "bg-blue-100 text-blue-800"
+                      }`}>
+                        {warehouse}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 font-medium text-gray-900">
                     {i.name}
                     {lowStock && (

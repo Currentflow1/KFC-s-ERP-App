@@ -15,8 +15,14 @@ export default function ProductsPage() {
     const supabase = createClient();
     setLoading(true);
     const [{ data: fin }, { data: rawMat }] = await Promise.all([
-      supabase.from("finished_products_static").select("*").order("created_at", { ascending: false }),
-      supabase.from("raw_materials_static").select("*").order("created_at", { ascending: false }),
+      supabase
+        .from("finished_products_static")
+        .select("*, finished_products_warehouses(warehouse)")
+        .order("created_at", { ascending: false }),
+      supabase
+        .from("raw_materials_static")
+        .select("*, raw_materials_warehouses(warehouse)")
+        .order("created_at", { ascending: false }),
     ]);
     setFinished(fin || []);
     setRaw(rawMat || []);
@@ -30,6 +36,7 @@ export default function ProductsPage() {
   async function deleteFinished(id) {
     const supabase = createClient();
     if (!confirm("Delete this finished product?")) return;
+    await supabase.from("finished_products_warehouses").delete().eq("finished_product_id", id);
     await supabase.from("finished_products_static").delete().eq("id", id);
     fetchData();
   }
@@ -37,28 +44,38 @@ export default function ProductsPage() {
   async function deleteRaw(id) {
     const supabase = createClient();
     if (!confirm("Delete this raw material?")) return;
+    await supabase.from("raw_materials_warehouses").delete().eq("raw_material_id", id);
     await supabase.from("raw_materials_static").delete().eq("id", id);
     fetchData();
   }
 
   const q = search.toLowerCase();
 
-  const filteredFinished = finished.filter((p) =>
-    (p.name || "").toLowerCase().includes(q) ||
-    (p.category_name || "").toLowerCase().includes(q) ||
-    (p.unit_of_measurement || "").toLowerCase().includes(q) ||
-    (p.warehouse || "").toLowerCase().includes(q)
-  );
+  const filteredFinished = finished.filter((p) => {
+    const warehouses = (p.finished_products_warehouses || []).map((w) => w.warehouse).join(" ").toLowerCase();
+    return (
+      (p.name || "").toLowerCase().includes(q) ||
+      (p.category_name || "").toLowerCase().includes(q) ||
+      warehouses.includes(q)
+    );
+  });
 
-  const filteredRaw = raw.filter((m) =>
-    (m.name || "").toLowerCase().includes(q) ||
-    (m.category_name || "").toLowerCase().includes(q) ||
-    (m.supplier_contact || "").toLowerCase().includes(q) ||
-    (m.unit_of_measurement || "").toLowerCase().includes(q) ||
-    (m.warehouse || "").toLowerCase().includes(q)
-  );
+  const filteredRaw = raw.filter((m) => {
+    const warehouses = (m.raw_materials_warehouses || []).map((w) => w.warehouse).join(" ").toLowerCase();
+    return (
+      (m.name || "").toLowerCase().includes(q) ||
+      (m.category_name || "").toLowerCase().includes(q) ||
+      (m.supplier_contact || "").toLowerCase().includes(q) ||
+      warehouses.includes(q)
+    );
+  });
 
   const filtered = tab === "finished" ? filteredFinished : filteredRaw;
+
+  function renderWarehouses(list) {
+    if (!list || list.length === 0) return "—";
+    return list.map((w) => w.warehouse).join(", ");
+  }
 
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
@@ -91,7 +108,7 @@ export default function ProductsPage() {
         <div className="w-px h-5 bg-gray-200" />
 
         <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder={tab === "finished" ? "Search by name, category, warehouse, or unit…" : "Search by name, category, supplier, warehouse, or unit…"}
+          placeholder={tab === "finished" ? "Search by name, category, or warehouse…" : "Search by name, category, supplier, or warehouse…"}
           className="text-black w-full max-w-sm border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
         {search && (
           <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
@@ -111,27 +128,23 @@ export default function ProductsPage() {
               <tr className="bg-gray-50 border-b border-gray-200">
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Category</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Qty / Unit</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">UOM</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouses</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="7">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="5">Loading…</td></tr>
               ) : filteredFinished.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="7">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="5">
                   {search ? `No products matching "${search}"` : "No finished products yet"}
                 </td></tr>
               ) : filteredFinished.map((p) => (
                 <tr key={p.id} className="hover:bg-gray-50 transition-colors">
                   <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
                   <td className="px-4 py-3 text-gray-500">{p.category_name}</td>
-                  <td className="px-4 py-3 text-gray-500">{p.quantity_per_unit}</td>
-                  <td className="px-4 py-3 text-gray-500">{p.unit_of_measurement}</td>
-                  <td className="px-4 py-3 text-gray-500">{p.warehouse || "—"}</td>
+                  <td className="px-4 py-3 text-gray-500">{renderWarehouses(p.finished_products_warehouses)}</td>
                   <td className="px-4 py-3">
                     {p.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
@@ -160,18 +173,16 @@ export default function ProductsPage() {
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Category</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Qty / Unit</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">UOM</th>
-                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouses</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="8">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="6">Loading…</td></tr>
               ) : filteredRaw.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="8">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="6">
                   {search ? `No materials matching "${search}"` : "No raw materials yet"}
                 </td></tr>
               ) : filteredRaw.map((m) => (
@@ -179,9 +190,7 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 font-medium text-gray-900">{m.name}</td>
                   <td className="px-4 py-3 text-gray-500">{m.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{m.supplier_contact}</td>
-                  <td className="px-4 py-3 text-gray-500">{m.quantity_per_unit}</td>
-                  <td className="px-4 py-3 text-gray-500">{m.unit_of_measurement}</td>
-                  <td className="px-4 py-3 text-gray-500">{m.warehouse || "—"}</td>
+                  <td className="px-4 py-3 text-gray-500">{renderWarehouses(m.raw_materials_warehouses)}</td>
                   <td className="px-4 py-3">
                     {m.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">

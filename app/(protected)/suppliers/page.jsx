@@ -15,7 +15,7 @@ export default function SuppliersPage() {
     const { data } = await supabase
       .from("suppliers")
       .select("*")
-      .order("created_at", { ascending: false });
+      .order("company_name", { ascending: true });
     setSuppliers(data || []);
     setLoading(false);
   }

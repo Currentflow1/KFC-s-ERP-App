@@ -102,6 +102,82 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   );
 }
 
+// Multi-select checkbox dropdown for filtering the orders table by warehouse.
+// Includes multi-warehouse products naturally since filtering happens on the
+// row's own `warehouse` field (each order row belongs to exactly one warehouse,
+// but a product that exists in multiple warehouses can have separate order
+// rows per warehouse — selecting more than one warehouse shows rows from any
+// of the selected warehouses).
+function WarehouseMultiSelect({ options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    function handler(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  function toggle(w) {
+    onChange(selected.includes(w) ? selected.filter((x) => x !== w) : [...selected, w]);
+  }
+
+  const label = selected.length === 0
+    ? "All warehouses"
+    : selected.length === 1
+      ? `Warehouse: ${selected[0]}`
+      : `${selected.length} warehouses`;
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        disabled={options.length === 0}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+          selected.length > 0
+            ? "bg-blue-50 text-blue-700 border-blue-300"
+            : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        {label}
+        <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && options.length > 0 && (
+        <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg p-2">
+          <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b border-gray-100">
+            <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Warehouses</span>
+            {selected.length > 0 && (
+              <button onClick={() => onChange([])} className="text-xs text-blue-600 hover:underline">Clear</button>
+            )}
+          </div>
+          <ul className="max-h-56 overflow-y-auto">
+            {options.map((w) => {
+              const checked = selected.includes(w);
+              return (
+                <li key={w}>
+                  <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-700 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggle(w)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    {w}
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function OrderTable() {
   const supabase = useMemo(() => createClient(), []);
 
@@ -120,43 +196,47 @@ export default function OrderTable() {
   const [offline, setOffline]         = useState(false);
   const [isFinalized, setIsFinalized] = useState(false);
   const [checkingFinalization, setCheckingFinalization] = useState(false);
+  const [tableWarehouseFilter, setTableWarehouseFilter] = useState([]); // filters the orders TABLE (not the add form)
 
   const [monitoringOptions, setMonitoringOptions]         = useState([]);
   const [representativeOptions, setRepresentativeOptions] = useState([]);
   const [staffOptions, setStaffOptions]                   = useState([]);
   const [supplierOptions, setSupplierOptions]             = useState([]);
 
-  // Raw product objects with warehouse info for filtering
-  const [rawProducts, setRawProducts]         = useState([]); // [{ name, warehouse }]
-  const [finishedProducts, setFinishedProducts] = useState([]); // [{ name, warehouse }]
+  // Products shaped as { name, warehouse } — built from junction table join.
+  // Each product can appear multiple times (once per warehouse).
+  const [rawProducts, setRawProducts]           = useState([]);
+  const [finishedProducts, setFinishedProducts] = useState([]);
 
-  const isRaw       = productType === PRODUCT_TYPE.RAW;
-  const isIncoming  = stockType   === STOCK_TYPE.INCOMING;
+  const isRaw        = productType === PRODUCT_TYPE.RAW;
+  const isIncoming   = stockType   === STOCK_TYPE.INCOMING;
   const showSupplier = isRaw && isIncoming;
 
-  const txTableName  = isRaw ? "raw_materials_transaction_log"  : "finished_products_transaction_log";
-  const invTableName = isRaw ? "raw_materials_inventory"        : "finished_products_inventory";
-  const histTableName = isRaw ? "raw_materials_inventory_history" : "finished_products_inventory_history";
+  const txTableName   = isRaw ? "raw_materials_transaction_log"    : "finished_products_transaction_log";
+  const invTableName  = isRaw ? "raw_materials_inventory"          : "finished_products_inventory";
+  const histTableName = isRaw ? "raw_materials_inventory_history"  : "finished_products_inventory_history";
 
-  // All unique warehouses for the active product type (null/empty excluded)
+  // All unique warehouses for the active product type
   const warehouseOptions = useMemo(() => {
     const source = isRaw ? rawProducts : finishedProducts;
     return [...new Set(source.map((p) => p.warehouse).filter(Boolean))].sort();
   }, [isRaw, rawProducts, finishedProducts]);
 
-  // Product names filtered by selected warehouse (if any)
+  // Product names filtered by selected warehouse in the add form
   const productOptions = useMemo(() => {
     const source = isRaw ? rawProducts : finishedProducts;
-    if (!formData.warehouse) return source.map((p) => p.name);
+    if (!formData.warehouse) return [...new Set(source.map((p) => p.name))];
     return source.filter((p) => p.warehouse === formData.warehouse).map((p) => p.name);
   }, [isRaw, rawProducts, finishedProducts, formData.warehouse]);
 
-  // Edit-mode product options filtered by the edit row's warehouse
+  // Product names filtered by selected warehouse in edit mode
   const editProductOptions = useMemo(() => {
     const source = isRaw ? rawProducts : finishedProducts;
-    if (!editData.warehouse) return source.map((p) => p.name);
+    if (!editData.warehouse) return [...new Set(source.map((p) => p.name))];
     return source.filter((p) => p.warehouse === editData.warehouse).map((p) => p.name);
   }, [isRaw, rawProducts, finishedProducts, editData.warehouse]);
+
+  // ── Offline detection ─────────────────────────────────────────────────────
 
   useEffect(() => {
     setOffline(!isOnline());
@@ -170,19 +250,17 @@ export default function OrderTable() {
     };
   }, []);
 
-  // ─── Check if today is already finalized ────────────────────────────────
+  // ── Check if today is already finalized ───────────────────────────────────
 
   async function checkIfTodayFinalized() {
     if (!isOnline()) return;
     setCheckingFinalization(true);
     try {
-      const today = todayLocal();
       const { data, error } = await supabase
         .from(histTableName)
         .select("id")
-        .eq("inventory_date", today)
+        .eq("inventory_date", todayLocal())
         .limit(1);
-      
       if (error) throw error;
       setIsFinalized(!!(data && data.length > 0));
     } catch (e) {
@@ -192,34 +270,64 @@ export default function OrderTable() {
     }
   }
 
-  useEffect(() => { 
-    fetchOptions(); 
+  useEffect(() => {
+    fetchOptions();
     checkIfTodayFinalized();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  useEffect(() => { 
-    fetchRows(); 
-    resetForm(); 
+  useEffect(() => {
+    fetchRows();
+    resetForm();
     checkIfTodayFinalized();
+    setTableWarehouseFilter([]); // reset table filter when switching product/stock type
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType, stockType]);
+
+  // ── Fetch dropdown options ────────────────────────────────────────────────
+  // Warehouse is now fetched from the junction tables and joined to the
+  // static table's name, producing { name, warehouse } pairs.
+  // A product with N warehouses appears N times — one entry per warehouse.
 
   async function fetchOptions() {
     if (!isOnline()) return;
-    const [mon, rep, staff, sup, rawProd, finProd] = await Promise.all([
+    const [mon, rep, staff, sup, rawJunction, finJunction] = await Promise.all([
       supabase.from("monitoring_employee").select("name"),
       supabase.from("representative_employee").select("name"),
       supabase.from("staff_employee").select("name"),
       supabase.from("suppliers").select("contact_person"),
-      supabase.from("raw_materials_static").select("name, warehouse"),
-      supabase.from("finished_products_static").select("name, warehouse"),
+      // Join raw_materials_warehouses → raw_materials_static to get (name, warehouse)
+      supabase
+        .from("raw_materials_warehouses")
+        .select("warehouse, raw_materials_static(name)"),
+      // Join finished_products_warehouses → finished_products_static to get (name, warehouse)
+      supabase
+        .from("finished_products_warehouses")
+        .select("warehouse, finished_products_static(name)"),
     ]);
+
     setMonitoringOptions(mon.data?.map((r) => r.name) ?? []);
     setRepresentativeOptions(rep.data?.map((r) => r.name) ?? []);
     setStaffOptions(staff.data?.map((r) => r.name) ?? []);
-    setSupplierOptions((sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A"));
-    setRawProducts(rawProd.data ?? []);
-    setFinishedProducts(finProd.data ?? []);
+    setSupplierOptions(
+      (sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A")
+    );
+
+    // Flatten junction rows into { name, warehouse } pairs
+    setRawProducts(
+      (rawJunction.data ?? [])
+        .filter((r) => r.raw_materials_static?.name)
+        .map((r) => ({ name: r.raw_materials_static.name, warehouse: r.warehouse }))
+    );
+
+    setFinishedProducts(
+      (finJunction.data ?? [])
+        .filter((r) => r.finished_products_static?.name)
+        .map((r) => ({ name: r.finished_products_static.name, warehouse: r.warehouse }))
+    );
   }
+
+  // ── Fetch pending orders ──────────────────────────────────────────────────
 
   async function fetchRows() {
     if (!isOnline()) {
@@ -258,14 +366,12 @@ export default function OrderTable() {
     setSearch("");
   }
 
-  // When warehouse changes in add form, clear product if it's no longer
-  // in the filtered list so the user can't submit a stale selection.
   function handleWarehouseChange(warehouse) {
     setFormData((prev) => {
       const source = isRaw ? rawProducts : finishedProducts;
       const validNames = warehouse
         ? source.filter((p) => p.warehouse === warehouse).map((p) => p.name)
-        : source.map((p) => p.name);
+        : [...new Set(source.map((p) => p.name))];
       return {
         ...prev,
         warehouse,
@@ -274,13 +380,12 @@ export default function OrderTable() {
     });
   }
 
-  // Same for edit mode
   function handleEditWarehouseChange(warehouse) {
     setEditData((prev) => {
       const source = isRaw ? rawProducts : finishedProducts;
       const validNames = warehouse
         ? source.filter((p) => p.warehouse === warehouse).map((p) => p.name)
-        : source.map((p) => p.name);
+        : [...new Set(source.map((p) => p.name))];
       return {
         ...prev,
         warehouse,
@@ -289,42 +394,26 @@ export default function OrderTable() {
     });
   }
 
-  async function resolveInventoryId(productName) {
+  async function resolveInventoryId(productName, warehouse) {
     const { data, error } = await supabase
       .from(invTableName)
       .select("id")
-      .eq("name", productName);
-
-    if (error) {
-      throw new Error(`Inventory lookup failed (${invTableName}): ${error.message}`);
-    }
-    if (!data || data.length === 0) {
-      throw new Error(
-        `No row in "${invTableName}" has name = "${productName}". ` +
-        `Check that this product exists there and the name matches exactly (case/spacing) ` +
-        `the name in "${isRaw ? "raw_materials_static" : "finished_products_static"}".`
-      );
-    }
-    if (data.length > 1) {
-      throw new Error(
-        `Found ${data.length} rows in "${invTableName}" named "${productName}" — ` +
-        `names must be unique there for this lookup to work.`
-      );
-    }
+      .eq("name", productName)
+      .eq("warehouse", warehouse);
+    if (error) throw new Error(`Inventory lookup failed: ${error.message}`);
+    if (!data || data.length === 0) throw new Error(`No inventory row found for "${productName}" in warehouse "${warehouse}".`);
     return data[0].id;
   }
 
-  async function handleAdd() {
-    // ─── FINALIZATION SAFETY CHECK ───
-    if (isFinalized) {
-      setError("⚠️ Today is already finalized. You cannot add new orders. Please undo the finalize or wait until tomorrow.");
-      return;
-    }
+  // ── ADD ───────────────────────────────────────────────────────────────────
 
-    if (!isOnline()) { setError("You're offline — reconnect to add an order."); return; }
+  async function handleAdd() {
+    if (isFinalized) { setError("⚠️ Today is already finalized. Undo finalize to add orders."); return; }
+    if (!isOnline())  { setError("You're offline — reconnect to add an order."); return; }
     setError(null);
     const qty = Number(isIncoming ? formData.incoming_bal : formData.outgoing_bal);
 
+    if (!formData.warehouse)                              { setError("Select a warehouse."); return; }
     if (!formData.monitoring_employee)                    { setError("Select a monitoring employee."); return; }
     if (!isIncoming && !formData.representative_employee) { setError("Select a representative employee."); return; }
     if (isRaw && isIncoming && !formData.supplier_name)   { setError("Select a supplier."); return; }
@@ -333,27 +422,25 @@ export default function OrderTable() {
 
     setSaving(true);
     try {
-      const inventory_id = await resolveInventoryId(formData.product_name);
-
+      const inventory_id = await resolveInventoryId(formData.product_name, formData.warehouse);
       const payload = {
         inventory_id,
         monitoring_employee:      formData.monitoring_employee,
         representative_employee:  isIncoming ? null : formData.representative_employee,
         staff_employee:           isIncoming ? null : (formData.staff_employee || null),
         product_name:             formData.product_name,
+        warehouse:                formData.warehouse,
         incoming_bal:             isIncoming ? qty : 0,
         outgoing_bal:             isIncoming ? 0 : qty,
         transaction_source:       "ordered",
         transaction_type:         "stock_movement",
         ...(isRaw ? { supplier_name: isIncoming ? formData.supplier_name : null } : {}),
       };
-
       const { error: insertError } = await supabase.from(txTableName).insert([payload]);
       if (insertError) throw insertError;
-
       resetForm();
       await fetchRows();
-      showSuccess("Order added. Inventory preview will update automatically.");
+      showSuccess("Order added.");
     } catch (e) {
       setError(e.message);
     } finally {
@@ -361,38 +448,31 @@ export default function OrderTable() {
     }
   }
 
-  async function handleEditSave(id) {
-    // ─── FINALIZATION SAFETY CHECK ───
-    if (isFinalized) {
-      setError("⚠️ Today is already finalized. You cannot edit orders. Please undo the finalize or wait until tomorrow.");
-      return;
-    }
+  // ── EDIT ──────────────────────────────────────────────────────────────────
 
-    if (!isOnline()) { setError("You're offline — reconnect to save changes."); return; }
+  async function handleEditSave(id) {
+    if (isFinalized) { setError("⚠️ Today is already finalized. Undo finalize to edit orders."); return; }
+    if (!isOnline())  { setError("You're offline — reconnect to save changes."); return; }
     setError(null);
     setSaving(true);
     try {
-      const newInventoryId = await resolveInventoryId(editData.product_name);
-
+      const newInventoryId = await resolveInventoryId(editData.product_name, editData.warehouse);
       const updatePayload = {
         inventory_id:             newInventoryId,
         monitoring_employee:      editData.monitoring_employee,
         representative_employee:  editData.representative_employee ?? null,
         staff_employee:           editData.staff_employee ?? null,
         product_name:             editData.product_name,
+        warehouse:                editData.warehouse,
         incoming_bal:             Number(editData.incoming_bal ?? 0),
         outgoing_bal:             Number(editData.outgoing_bal ?? 0),
         ...(isRaw ? {
           supplier_name: Number(editData.incoming_bal ?? 0) > 0
-            ? (editData.supplier_name || null)
-            : null,
+            ? (editData.supplier_name || null) : null,
         } : {}),
       };
-
-      const { error: updateError } = await supabase
-        .from(txTableName).update(updatePayload).eq("id", id);
+      const { error: updateError } = await supabase.from(txTableName).update(updatePayload).eq("id", id);
       if (updateError) throw updateError;
-
       setEditingId(null);
       await fetchRows();
       showSuccess("Order updated.");
@@ -403,19 +483,11 @@ export default function OrderTable() {
     }
   }
 
-  async function confirmDelete() {
-    // ─── FINALIZATION SAFETY CHECK ───
-    if (isFinalized) {
-      setError("⚠️ Today is already finalized. You cannot delete orders. Please undo the finalize or wait until tomorrow.");
-      setDeleteTarget(null);
-      return;
-    }
+  // ── DELETE (soft) ─────────────────────────────────────────────────────────
 
-    if (!isOnline()) {
-      setError("You're offline — reconnect to delete this order.");
-      setDeleteTarget(null);
-      return;
-    }
+  async function confirmDelete() {
+    if (isFinalized) { setError("⚠️ Today is already finalized. Undo finalize to delete orders."); setDeleteTarget(null); return; }
+    if (!isOnline())  { setError("You're offline — reconnect to delete this order."); setDeleteTarget(null); return; }
     const id = deleteTarget;
     setDeleteTarget(null);
     setError(null);
@@ -425,7 +497,6 @@ export default function OrderTable() {
         .update({ removed_at: new Date().toISOString(), removed_reason: "deleted" })
         .eq("id", id);
       if (deleteError) throw deleteError;
-
       await fetchRows();
       showSuccess("Order deleted.");
     } catch (e) {
@@ -434,29 +505,27 @@ export default function OrderTable() {
   }
 
   function handleEditStart(row) {
-    // ─── FINALIZATION SAFETY CHECK ───
-    if (isFinalized) {
-      setError("⚠️ Today is already finalized. You cannot edit orders. Please undo the finalize or wait until tomorrow.");
-      return;
-    }
-
-    if (!isOnline()) { setError("You're offline — reconnect to edit this order."); return; }
+    if (isFinalized) { setError("⚠️ Today is already finalized. Undo finalize to edit orders."); return; }
+    if (!isOnline())  { setError("You're offline — reconnect to edit this order."); return; }
     setEditingId(row.id);
-    setEditData({ ...row, warehouse: "" });
+    setEditData({ ...row, warehouse: row.warehouse || "" });
   }
 
   function handleEditChange(field, value) { setEditData((prev) => ({ ...prev, [field]: value })); }
 
   const filteredRows = rows
     .filter((r) => isIncoming ? (r.incoming_bal ?? 0) > 0 : (r.outgoing_bal ?? 0) > 0)
-    .filter((r) => r.product_name?.toLowerCase().includes(search.trim().toLowerCase()));
+    .filter((r) => r.product_name?.toLowerCase().includes(search.trim().toLowerCase()))
+    .filter((r) => tableWarehouseFilter.length === 0 || tableWarehouseFilter.includes(r.warehouse));
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
 
       {deleteTarget && (
         <ConfirmModal
-          message="Delete this order? The inventory preview will update automatically."
+          message="Delete this order? The change will be recorded in Transaction Logs."
           onConfirm={confirmDelete}
           onCancel={() => setDeleteTarget(null)}
         />
@@ -464,19 +533,15 @@ export default function OrderTable() {
 
       <div className="mb-5">
         <h1 className="text-xl font-semibold text-gray-900">Order Table</h1>
-        <p className="text-sm text-gray-500 mt-0.5">
-          Pending orders — applied to inventory permanently on Finalize Day.
-        </p>
+        <p className="text-sm text-gray-500 mt-0.5">Pending orders — applied to inventory permanently on Finalize Day.</p>
       </div>
 
       {offline && (
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
-          <span className="font-semibold">You're offline.</span> Order Table requires an internet
-          connection — adding, editing, and deleting orders are disabled until you reconnect.
+          <span className="font-semibold">You're offline.</span> Order Table requires an internet connection.
         </div>
       )}
 
-      {/* ─── FINALIZATION LOCK BANNER ─── */}
       {isFinalized && (
         <div className="mb-4 rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-sm">
           <div className="flex items-start gap-3">
@@ -484,13 +549,14 @@ export default function OrderTable() {
             <div>
               <p className="font-semibold">Today is finalized — Order Table is locked</p>
               <p className="text-xs mt-1 text-red-700">
-                You cannot add, edit, or delete orders for today. Go to the Inventory page to <strong>Undo Finalize</strong> if you need to make changes, or wait until tomorrow to add new orders.
+                Go to the Inventory page and use <strong>↩ Finalize</strong> to re-open today's orders, or wait until tomorrow.
               </p>
             </div>
           </div>
         </div>
       )}
 
+      {/* Controls */}
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button onClick={() => setProductType(PRODUCT_TYPE.RAW)}
@@ -502,9 +568,7 @@ export default function OrderTable() {
             Finished Products
           </button>
         </div>
-
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
-
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button onClick={() => setStockType(STOCK_TYPE.INCOMING)}
             className={`px-4 py-1.5 text-sm font-medium transition-colors ${isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
@@ -524,7 +588,7 @@ export default function OrderTable() {
         <div className="mb-4 rounded-md border border-green-200 bg-green-50 px-4 py-2.5 text-sm text-green-700">{successMsg}</div>
       )}
 
-      {/* ── Add form ── */}
+      {/* Add form */}
       <div className={`bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-5 transition-opacity ${isFinalized ? "opacity-60" : ""}`}>
         <h2 className="text-sm font-semibold text-gray-900 mb-4">
           {isIncoming ? "Add Incoming Order" : "Add Outgoing Order"}
@@ -532,29 +596,6 @@ export default function OrderTable() {
         </h2>
 
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
-          <SearchableSelect label="Monitoring" value={formData.monitoring_employee}
-            options={monitoringOptions} disabled={offline || isFinalized}
-            onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))} />
-
-          {!isIncoming && (
-            <SearchableSelect label="Representative" value={formData.representative_employee}
-              options={representativeOptions} disabled={offline || isFinalized}
-              onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))} />
-          )}
-
-          {!isIncoming && (
-            <SearchableSelect label="Staff" value={formData.staff_employee}
-              options={staffOptions} disabled={offline || isFinalized}
-              onChange={(v) => setFormData((p) => ({ ...p, staff_employee: v }))} />
-          )}
-
-          {showSupplier && (
-            <SearchableSelect label="Supplier" value={formData.supplier_name}
-              options={supplierOptions} disabled={offline || isFinalized}
-              onChange={(v) => setFormData((p) => ({ ...p, supplier_name: v }))} />
-          )}
-
-          {/* Warehouse — picking this filters the product list below */}
           <SearchableSelect
             label="Warehouse"
             value={formData.warehouse}
@@ -563,8 +604,24 @@ export default function OrderTable() {
             placeholder={warehouseOptions.length === 0 ? "No warehouses set" : "All warehouses"}
             onChange={handleWarehouseChange}
           />
-
-          {/* Product — filtered by warehouse if one is selected */}
+          <SearchableSelect label="Monitoring" value={formData.monitoring_employee}
+            options={monitoringOptions} disabled={offline || isFinalized}
+            onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))} />
+          {!isIncoming && (
+            <SearchableSelect label="Representative" value={formData.representative_employee}
+              options={representativeOptions} disabled={offline || isFinalized}
+              onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))} />
+          )}
+          {!isIncoming && (
+            <SearchableSelect label="Staff" value={formData.staff_employee}
+              options={staffOptions} disabled={offline || isFinalized}
+              onChange={(v) => setFormData((p) => ({ ...p, staff_employee: v }))} />
+          )}
+          {showSupplier && (
+            <SearchableSelect label="Supplier" value={formData.supplier_name}
+              options={supplierOptions} disabled={offline || isFinalized}
+              onChange={(v) => setFormData((p) => ({ ...p, supplier_name: v }))} />
+          )}
           <SearchableSelect
             label={formData.warehouse ? `Product (${formData.warehouse})` : "Product"}
             value={formData.product_name}
@@ -572,7 +629,6 @@ export default function OrderTable() {
             disabled={offline || isFinalized}
             onChange={(v) => setFormData((p) => ({ ...p, product_name: v }))}
           />
-
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
               {isIncoming ? "Incoming Qty" : "Outgoing Qty"}
@@ -589,22 +645,29 @@ export default function OrderTable() {
 
         <div className="mt-4 flex justify-end">
           <button onClick={handleAdd} disabled={saving || offline || isFinalized}
-            className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-            title={isFinalized ? "Order Table is locked — undo finalize to add orders" : ""}>
+            title={isFinalized ? "Order Table is locked — undo finalize to add orders" : ""}
+            className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
             {saving ? "Saving…" : "Add Order"}
           </button>
         </div>
       </div>
 
-      {/* ── Orders table ── */}
+      {/* Table */}
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
-        <div className="flex items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
+        <div className="flex flex-wrap items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Search products…"
             className="w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
           {search && (
             <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
           )}
+
+          <WarehouseMultiSelect
+            options={warehouseOptions}
+            selected={tableWarehouseFilter}
+            onChange={setTableWarehouseFilter}
+          />
+
           {!loading && (
             <span className="ml-auto text-xs text-gray-400 shrink-0">
               {filteredRows.length} {filteredRows.length === 1 ? "order" : "orders"}
@@ -625,6 +688,7 @@ export default function OrderTable() {
             <table className="w-full text-sm min-w-[900px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
                   {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>}
                   {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Staff</th>}
@@ -640,6 +704,7 @@ export default function OrderTable() {
                   const isEditing = editingId === row.id;
                   return (
                     <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+                      <td className="px-4 py-3 text-gray-500">{row.warehouse ?? "—"}</td>
                       <td className="px-4 py-3 min-w-[160px]">
                         {isEditing
                           ? <SearchableSelect value={editData.monitoring_employee} options={monitoringOptions} onChange={(v) => handleEditChange("monitoring_employee", v)} />
@@ -669,7 +734,6 @@ export default function OrderTable() {
                       <td className="px-4 py-3 font-medium text-gray-900 min-w-[200px]">
                         {isEditing ? (
                           <div className="flex flex-col gap-1.5">
-                            {/* Warehouse filter in edit mode */}
                             <SearchableSelect
                               placeholder="Filter by warehouse…"
                               value={editData.warehouse ?? ""}
@@ -682,9 +746,7 @@ export default function OrderTable() {
                               onChange={(v) => handleEditChange("product_name", v)}
                             />
                           </div>
-                        ) : (
-                          row.product_name
-                        )}
+                        ) : row.product_name}
                       </td>
                       <td className="px-4 py-3">
                         {isEditing ? (
@@ -710,11 +772,11 @@ export default function OrderTable() {
                         ) : (
                           <div className="inline-flex items-center gap-1">
                             <button onClick={() => handleEditStart(row)} disabled={offline || isFinalized}
-                              className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                              title={isFinalized ? "Order Table is locked" : ""}>Edit</button>
+                              title={isFinalized ? "Order Table is locked" : ""}
+                              className="px-3 py-1.5 text-xs font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Edit</button>
                             <button onClick={() => setDeleteTarget(row.id)} disabled={offline || isFinalized}
-                              className="px-3 py-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-                              title={isFinalized ? "Order Table is locked" : ""}>Delete</button>
+                              title={isFinalized ? "Order Table is locked" : ""}
+                              className="px-3 py-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Delete</button>
                           </div>
                         )}
                       </td>

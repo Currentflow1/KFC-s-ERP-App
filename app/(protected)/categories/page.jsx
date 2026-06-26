@@ -15,7 +15,7 @@ export default function CategoriesPage() {
     const { data } = await supabase
       .from("categories")
       .select("*")
-      .order("created_at", { ascending: false });
+      .order("name", { ascending: true });
     setCategories(data || []);
     setLoading(false);
   }

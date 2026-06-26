@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabaseClient";
 import InventoryCalendar from "@/app/(protected)/inventory/components/InventoryCalendar";
 
@@ -16,34 +16,141 @@ import {
 
 const LOW_STOCK_THRESHOLD = 100;
 
+// ── Warehouse dropdown (multi-select with checkboxes) ────────────────────────
+function WarehouseMultiSelect({ options, selected, onChange }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    function handler(e) {
+      if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  function toggle(w) {
+    onChange(selected.includes(w) ? selected.filter((x) => x !== w) : [...selected, w]);
+  }
+
+  const label = selected.length === 0
+    ? "All warehouses"
+    : selected.length === 1
+      ? `Warehouse: ${selected[0]}`
+      : `${selected.length} warehouses`;
+
+  return (
+    <div className="relative" ref={containerRef}>
+      <button
+        type="button"
+        onClick={() => setOpen((p) => !p)}
+        disabled={options.length === 0}
+        className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
+          selected.length > 0
+            ? "bg-blue-50 text-blue-700 border-blue-300"
+            : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+        } disabled:opacity-50 disabled:cursor-not-allowed`}
+      >
+        📦 {label}
+        <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+      </button>
+
+      {open && options.length > 0 && (
+        <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg p-2">
+          <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b border-gray-100">
+            <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Warehouses</span>
+            {selected.length > 0 && (
+              <button onClick={() => onChange([])} className="text-xs text-blue-600 hover:underline">Clear</button>
+            )}
+          </div>
+          <ul className="max-h-56 overflow-y-auto">
+            {options.map((w) => {
+              const checked = selected.includes(w);
+              return (
+                <li key={w}>
+                  <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-700 hover:bg-gray-50 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggle(w)}
+                      className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    />
+                    {w}
+                  </label>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function InventoryPage() {
   const supabase = useMemo(() => createClient(), []);
 
-  const [tab, setTab] = useState("finished");
-  const [items, setItems] = useState([]);
-  const [date, setDate] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [printedAt, setPrintedAt] = useState(null);
-  const [warehouseFilter, setWarehouseFilter] = useState("all");
+  const [tab, setTab]                     = useState("finished");
+  const [items, setItems]                 = useState([]);
+  const [date, setDate]                   = useState("");
+  const [loading, setLoading]             = useState(false);
+  const [printedAt, setPrintedAt]         = useState(null);
+  const [chartCollapsed, setChartCollapsed] = useState(false);
+
+  // ✅ Warehouse filter and available warehouses
+  const [warehouseFilter, setWarehouseFilter] = useState([]);
+  const [availableWarehouses, setAvailableWarehouses] = useState([]);
+
+  useEffect(() => {
+    loadAvailableWarehouses();
+  }, [tab]);
 
   useEffect(() => {
     loadData();
   }, [tab, date]);
 
-  // reset warehouse filter when tab or date changes
   useEffect(() => {
-    setWarehouseFilter("all");
+    setWarehouseFilter([]);
   }, [tab, date]);
 
+  // ── Load available warehouses from warehouse junction tables ────────────────
+  async function loadAvailableWarehouses() {
+    const table = tab === "finished"
+      ? "finished_products_warehouses"
+      : "raw_materials_warehouses";
+
+    try {
+      const { data, error } = await supabase
+        .from(table)
+        .select("warehouse")
+        .order("warehouse", { ascending: true });
+
+      if (error) throw error;
+
+      const uniqueWarehouses = Array.from(
+        new Set((data || []).map((row) => row.warehouse).filter(Boolean))
+      ).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
+
+      setAvailableWarehouses(uniqueWarehouses);
+    } catch (e) {
+      console.error("[loadAvailableWarehouses] error:", e);
+      setAvailableWarehouses([]);
+    }
+  }
+
+  // ── Load inventory data ───────────────────────────────────────────────────
   async function loadData() {
     setLoading(true);
 
     const isHistory = date !== "";
 
-    const staticTable =
-      tab === "finished" ? "finished_products_static" : "raw_materials_static";
+    const staticTable = tab === "finished"
+      ? "finished_products_static"
+      : "raw_materials_static";
 
-    const { data: staticItems } = await supabase.from(staticTable).select("*");
+    const { data: staticItems } = await supabase
+      .from(staticTable)
+      .select("id, name, category_name");
 
     const inventoryTable = isHistory
       ? tab === "finished"
@@ -55,7 +162,6 @@ export default function InventoryPage() {
 
     let query = supabase.from(inventoryTable).select("*");
     if (isHistory) query = query.eq("inventory_date", date);
-
     const { data: inventoryItems } = await query;
 
     const map = {};
@@ -69,9 +175,8 @@ export default function InventoryPage() {
       return {
         id:           s.id,
         name:         s.name,
-        category_id:  s.category_id,
-        // warehouse comes from the static table (source of truth)
-        warehouse:    s.warehouse ?? null,
+        category_id:  s.category_name,
+        warehouse:    inv?.warehouse ?? null,
         beg_bal:      inv?.beg_bal      ?? 0,
         incoming_bal: inv?.incoming_bal ?? 0,
         outgoing_bal: inv?.outgoing_bal ?? 0,
@@ -90,17 +195,16 @@ export default function InventoryPage() {
     requestAnimationFrame(() => window.print());
   }
 
-  // ── warehouse list derived from items ────────────────────────────────────────
-  const warehouses = useMemo(() => {
-    const set = new Set(items.map((i) => i.warehouse).filter(Boolean));
-    return Array.from(set).sort();
-  }, [items]);
-
-  // ── filtered items (respects warehouse selector) ─────────────────────────────
-  const filteredItems = useMemo(
-    () => warehouseFilter === "all" ? items : items.filter((i) => i.warehouse === warehouseFilter),
-    [items, warehouseFilter]
-  );
+  // ✅ Filter items by warehouse - SAME PATTERN AS INVENTORYPAGE
+  const filteredItems = useMemo(() => {
+    if (warehouseFilter.length === 0) {
+      // No filter = show all items
+      return [...items].sort((a, b) => a.name.localeCompare(b.name));
+    }
+    // Show only items where warehouse is in the selected warehouses
+    const list = items.filter((it) => warehouseFilter.includes(it.warehouse));
+    return [...list].sort((a, b) => a.name.localeCompare(b.name));
+  }, [items, warehouseFilter]);
 
   const summary = useMemo(() => ({
     totalItems: filteredItems.length,
@@ -120,10 +224,8 @@ export default function InventoryPage() {
   );
 
   const priorityList = useMemo(() => {
-    const out = outOfStock.map((i) => ({ ...i, severity: "out" }));
-    const low = [...lowStock]
-      .sort((a, b) => Number(a.current_bal) - Number(b.current_bal))
-      .map((i) => ({ ...i, severity: "low" }));
+    const out = [...outOfStock].sort((a, b) => a.name.localeCompare(b.name)).map((i) => ({ ...i, severity: "out" }));
+    const low = [...lowStock].sort((a, b) => a.name.localeCompare(b.name)).map((i) => ({ ...i, severity: "low" }));
     return [...out, ...low];
   }, [outOfStock, lowStock]);
 
@@ -137,6 +239,15 @@ export default function InventoryPage() {
     })),
     [filteredItems]
   );
+
+  // Subtitle / footer label for active warehouse filter
+  const warehouseLabel = warehouseFilter.length === 0
+    ? null
+    : warehouseFilter.length === 1
+      ? warehouseFilter[0]
+      : `${warehouseFilter.length} warehouses`;
+
+  // ── Render ────────────────────────────────────────────────────────────────
 
   return (
     <>
@@ -177,7 +288,7 @@ export default function InventoryPage() {
             <p className="print-subtitle text-sm text-gray-500 mt-0.5">
               {date ? `Snapshot: ${date}` : "Live Inventory View"} &mdash;{" "}
               {tab === "finished" ? "Finished Products" : "Raw Materials"}
-              {warehouseFilter !== "all" && ` — 📦 ${warehouseFilter}`}
+              {warehouseLabel && ` — 📦 ${warehouseLabel}`}
             </p>
           </div>
           <button
@@ -211,38 +322,12 @@ export default function InventoryPage() {
 
           <InventoryCalendar tab={tab} date={date} onSelectDate={setDate} />
 
-          {/* Warehouse filter — only shown when there are multiple warehouses */}
-          {warehouses.length > 0 && (
-            <>
-              <div className="w-px h-6 bg-gray-200 mx-0.5" />
-              <div className="flex items-center gap-1.5 flex-wrap">
-                <span className="text-xs text-gray-400 font-medium">📦</span>
-                <button
-                  onClick={() => setWarehouseFilter("all")}
-                  className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
-                    warehouseFilter === "all"
-                      ? "bg-blue-600 text-white border-blue-600"
-                      : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-                  }`}
-                >
-                  All
-                </button>
-                {warehouses.map((wh) => (
-                  <button
-                    key={wh}
-                    onClick={() => setWarehouseFilter(wh)}
-                    className={`px-3 py-1 rounded-md text-xs font-medium border transition-colors ${
-                      warehouseFilter === wh
-                        ? "bg-blue-600 text-white border-blue-600"
-                        : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
-                    }`}
-                  >
-                    {wh}
-                  </button>
-                ))}
-              </div>
-            </>
-          )}
+          {/* ✅ Warehouse filter - CONNECTED */}
+          <WarehouseMultiSelect
+            options={availableWarehouses}
+            selected={warehouseFilter}
+            onChange={setWarehouseFilter}
+          />
         </div>
 
         {/* KPI cards */}
@@ -292,25 +377,55 @@ export default function InventoryPage() {
           </div>
         )}
 
-        {/* Chart */}
+        {/* Chart — horizontal bar (collapsible) */}
         <div className="print-hide-chart mb-5 bg-white border border-gray-200 rounded-lg shadow-sm p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500">Stock vs. loss by item</h2>
+          <button
+            type="button"
+            onClick={() => setChartCollapsed((p) => !p)}
+            className="w-full flex items-center justify-between mb-3 group"
+            aria-expanded={!chartCollapsed}
+          >
+            <span className="flex items-center gap-2">
+              <span
+                className={`text-gray-400 text-[10px] transition-transform duration-150 ${
+                  chartCollapsed ? "-rotate-90" : ""
+                }`}
+              >
+                ▼
+              </span>
+              <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 group-hover:text-gray-700">
+                Stock vs. loss by item
+              </h2>
+            </span>
             <div className="flex items-center gap-3 text-xs text-gray-400">
-              <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-green-600" /> stock</span>
-              <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-red-600" /> loss</span>
+              {!chartCollapsed && (
+                <>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-green-600" /> stock</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-red-600" /> loss</span>
+                </>
+              )}
+              <span className="text-gray-300">{chartCollapsed ? "Show" : "Hide"}</span>
             </div>
-          </div>
-          <ResponsiveContainer width="100%" height={260}>
-            <ComposedChart data={chartData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" vertical={false} />
-              <XAxis dataKey="name" tick={{ fontSize: 11, fill: "#9CA3AF" }} axisLine={{ stroke: "#E5E7EB" }} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
-              <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }} />
-              <Bar dataKey="stock" fill="#16A34A" radius={[3, 3, 0, 0]} />
-              <Bar dataKey="loss"  fill="#DC2626" radius={[3, 3, 0, 0]} />
-            </ComposedChart>
-          </ResponsiveContainer>
+          </button>
+          {!chartCollapsed && (
+            <ResponsiveContainer width="100%" height={Math.max(260, chartData.length * 32)}>
+              <ComposedChart data={chartData} layout="vertical" margin={{ left: 10, right: 16 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" horizontal={false} />
+                <XAxis type="number" tick={{ fontSize: 11, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  tick={{ fontSize: 11, fill: "#9CA3AF" }}
+                  axisLine={{ stroke: "#E5E7EB" }}
+                  tickLine={false}
+                  width={120}
+                />
+                <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }} />
+                <Bar dataKey="stock" fill="#16A34A" radius={[0, 3, 3, 0]} />
+                <Bar dataKey="loss"  fill="#DC2626" radius={[0, 3, 3, 0]} />
+              </ComposedChart>
+            </ResponsiveContainer>
+          )}
         </div>
 
         {/* Detail table */}
@@ -318,7 +433,7 @@ export default function InventoryPage() {
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gray-50">
             <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
               {tab === "finished" ? "Finished Products" : "Raw Materials"} — detail
-              {warehouseFilter !== "all" && ` · ${warehouseFilter}`}
+              {warehouseLabel && ` · ${warehouseLabel}`}
             </span>
             {loading && <span className="text-xs text-gray-400 animate-pulse">Loading…</span>}
           </div>
@@ -354,8 +469,14 @@ export default function InventoryPage() {
                         {isLow && <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />}
                         {i.name}
                       </td>
-                      <td className="px-4 py-3 text-gray-400 text-xs">
-                        {i.warehouse ?? <span className="text-gray-200">—</span>}
+                      <td className="px-4 py-3">
+                        {i.warehouse ? (
+                          <span className="text-xs text-gray-500 bg-gray-100 px-1.5 py-0.5 rounded inline-block">
+                            {i.warehouse}
+                          </span>
+                        ) : (
+                          <span className="text-gray-300 text-xs">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-center text-gray-600">{i.beg_bal}</td>
                       <td className="px-4 py-3 text-center font-semibold text-green-600">
@@ -400,7 +521,7 @@ export default function InventoryPage() {
           <div className="flex justify-between">
             <span>
               Inventory System — {tab === "finished" ? "Finished Products" : "Raw Materials"}
-              {warehouseFilter !== "all" && ` — Warehouse: ${warehouseFilter}`}
+              {warehouseLabel && ` — Warehouse: ${warehouseLabel}`}
             </span>
             <span>Printed: {printedAt}</span>
           </div>
