@@ -133,7 +133,6 @@ export default function EditRawMaterial({ params }) {
 
     if (error) { alert("Update failed: " + error.message); return; }
 
-    // Replace all warehouse rows for this material
     await supabase.from("raw_materials_warehouses").delete().eq("raw_material_id", id);
     if (warehouses.length > 0) {
       const rows = warehouses.map((w) => ({ raw_material_id: id, warehouse: w }));

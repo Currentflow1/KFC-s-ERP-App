@@ -95,7 +95,13 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   const table       = isRaw ? "raw_materials_inventory"        : "finished_products_inventory";
   const txLogTable  = isRaw ? "raw_materials_transaction_log"  : "finished_products_transaction_log";
   const snapshotKey = isRaw ? "raw"                            : "finished";
-  const staticTable = isRaw ? "raw_materials_static"           : "finished_products_static";
+
+  // FK column required by every inventory row (NOT NULL in schema, and
+  // checked by sync.js's _flushInventory guard before it will queue/retry
+  // a write). `item` already carries this from InventoryPage's merge step,
+  // so we just read it straight off — never re-derive or look it up again.
+  const fkField = isRaw ? "raw_material_id" : "finished_product_id";
+  const fkValue = item[fkField] ?? null;
 
   // ── Stock direction — mirrors Orders module ───────────────────────────────
   const [stockMode, setStockMode] = useState("incoming");
@@ -122,7 +128,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   const [representativeOptions, setRepresentativeOptions] = useState([]);
   const [staffOptions,          setStaffOptions]          = useState([]);
   const [supplierOptions,       setSupplierOptions]       = useState([]);
-  const [warehouse,             setWarehouse]             = useState(null);
+  // Warehouse comes straight from the item passed in by InventoryPage —
+  // that row was already merged with `warehouse` from the inventory table,
+  // so there is no need to re-fetch it from anywhere here.
+  const [warehouse,             setWarehouse]             = useState(item.warehouse ?? null);
 
   const displayedCurrent = Number(item.current_bal     ?? 0);
   const pendingIn        = Number(item._pendingIncoming ?? 0);
@@ -134,14 +143,13 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
     let cancelled = false;
 
     async function loadFromCache() {
-      const [r, u, m, rep, staff, sup, wh] = await Promise.all([
+      const [r, u, m, rep, staff, sup] = await Promise.all([
         getCache("role"),
         getCache("userId"),
         getCache("monitoringOptions"),
         getCache("representativeOptions"),
         getCache("staffOptions"),
         getCache("supplierOptions"),
-        getCache(`warehouse_${tab}_${item.id}`),
       ]);
       if (cancelled) return;
       setRole(r ?? "staff");
@@ -150,7 +158,6 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
       setRepresentativeOptions(rep ?? []);
       setStaffOptions(staff ?? []);
       setSupplierOptions(sup   ?? []);
-      setWarehouse(wh   ?? null);
       setOfflineMode(true);
     }
 
@@ -169,14 +176,12 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
           { data: repRows },
           { data: staffRows },
           { data: supRows },
-          { data: staticRows },
         ] = await Promise.all([
           supabase.from("profiles").select("role").eq("id", user.id).single(),
           supabase.from("monitoring_employee").select("name"),
           supabase.from("representative_employee").select("name"),
           supabase.from("staff_employee").select("name"),
           supabase.from("suppliers").select("contact_person"),
-          supabase.from(staticTable).select("warehouse").eq("name", item.name).limit(1),
         ]);
         if (cancelled) return;
 
@@ -185,21 +190,18 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         const repNames      = (repRows   ?? []).map((r) => r.name);
         const staffNames    = (staffRows ?? []).map((r) => r.name).filter(Boolean);
         const supNames      = (supRows   ?? []).map((r) => r.contact_person).filter((n) => n !== "N/A");
-        const itemWarehouse = staticRows?.[0]?.warehouse ?? null;
 
         setRole(resolvedRole);
         setMonitoringOptions(monNames);
         setRepresentativeOptions(repNames);
         setStaffOptions(staffNames);
         setSupplierOptions(supNames);
-        setWarehouse(itemWarehouse);
 
-        await setCache("role",                        resolvedRole);
-        await setCache("monitoringOptions",           monNames);
-        await setCache("representativeOptions",       repNames);
-        await setCache("staffOptions",                staffNames);
-        await setCache("supplierOptions",             supNames);
-        await setCache(`warehouse_${tab}_${item.id}`, itemWarehouse);
+        await setCache("role",                  resolvedRole);
+        await setCache("monitoringOptions",     monNames);
+        await setCache("representativeOptions", repNames);
+        await setCache("staffOptions",          staffNames);
+        await setCache("supplierOptions",       supNames);
       } catch (e) {
         console.error("[ManipulatePanel] live fetch failed, using cache:", e);
         await loadFromCache();
@@ -301,6 +303,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing,
         current_bal, actual_bal, loss,
         warehouse: warehouse || null,
+        // Required FK — without this the row gets permanently rejected by
+        // sync.js's _flushInventory guard ("missing finished_product_id" /
+        // "missing raw_material_id") if it ever lands in the write queue.
+        [fkField]: fkValue,
       };
       const txPayload = buildTxPayload({ mode, q, actual_bal, loss, txType: "stock_movement" });
 
@@ -367,6 +373,8 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         beg_bal, incoming_bal, outgoing_bal, current_bal,
         actual_bal: a, loss,
         warehouse: warehouse || null,
+        // Same FK requirement as applyChange() above.
+        [fkField]: fkValue,
       };
       const txPayload = buildTxPayload({ mode: null, q: 0, actual_bal: a, loss, txType: "count_correction" });
 

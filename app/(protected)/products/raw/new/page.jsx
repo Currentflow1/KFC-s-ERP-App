@@ -72,11 +72,18 @@ function WarehouseInput({ warehouses, onChange }) {
   return (
     <div>
       <div className="flex gap-2 mb-2">
-        <input type="text" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={onKeyDown}
+        <input
+          type="text"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onKeyDown}
           placeholder="Add warehouse and press Enter"
-          className="text-black flex-1 border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          className="text-black flex-1 border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
         <button type="button" onClick={add}
-          className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm rounded-lg">Add</button>
+          className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm rounded-lg">
+          Add
+        </button>
       </div>
       {warehouses.length > 0 && (
         <div className="flex flex-wrap gap-1.5">

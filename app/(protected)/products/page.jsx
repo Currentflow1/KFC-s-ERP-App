@@ -10,6 +10,7 @@ export default function ProductsPage() {
   const [raw, setRaw] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [deletingId, setDeletingId] = useState(null);
 
   async function fetchData() {
     const supabase = createClient();
@@ -35,18 +36,110 @@ export default function ProductsPage() {
 
   async function deleteFinished(id) {
     const supabase = createClient();
-    if (!confirm("Delete this finished product?")) return;
-    await supabase.from("finished_products_warehouses").delete().eq("finished_product_id", id);
-    await supabase.from("finished_products_static").delete().eq("id", id);
-    fetchData();
+    if (!confirm("Delete this finished product? This cannot be undone.")) return;
+    setDeletingId(id);
+    try {
+      const { data: inventories, error: invFetchErr } = await supabase
+        .from("finished_products_inventory")
+        .select("id")
+        .eq("finished_product_id", id);
+      if (invFetchErr) throw invFetchErr;
+
+      const inventoryIds = (inventories || []).map((i) => i.id);
+
+      if (inventoryIds.length > 0) {
+        const { error: histErr } = await supabase
+          .from("finished_products_inventory_history")
+          .delete()
+          .in("inventory_id", inventoryIds);
+        if (histErr) throw histErr;
+
+        const { error: logErr } = await supabase
+          .from("finished_products_transaction_log")
+          .delete()
+          .in("inventory_id", inventoryIds);
+        if (logErr) throw logErr;
+
+        const { error: invErr } = await supabase
+          .from("finished_products_inventory")
+          .delete()
+          .in("id", inventoryIds);
+        if (invErr) throw invErr;
+      }
+
+      const { error: whErr } = await supabase
+        .from("finished_products_warehouses")
+        .delete()
+        .eq("finished_product_id", id);
+      if (whErr) throw whErr;
+
+      const { error: staticErr } = await supabase
+        .from("finished_products_static")
+        .delete()
+        .eq("id", id);
+      if (staticErr) throw staticErr;
+
+      fetchData();
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Delete failed: " + (err.message || "Unknown error"));
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   async function deleteRaw(id) {
     const supabase = createClient();
-    if (!confirm("Delete this raw material?")) return;
-    await supabase.from("raw_materials_warehouses").delete().eq("raw_material_id", id);
-    await supabase.from("raw_materials_static").delete().eq("id", id);
-    fetchData();
+    if (!confirm("Delete this raw material? This cannot be undone.")) return;
+    setDeletingId(id);
+    try {
+      const { data: inventories, error: invFetchErr } = await supabase
+        .from("raw_materials_inventory")
+        .select("id")
+        .eq("raw_material_id", id);
+      if (invFetchErr) throw invFetchErr;
+
+      const inventoryIds = (inventories || []).map((i) => i.id);
+
+      if (inventoryIds.length > 0) {
+        const { error: histErr } = await supabase
+          .from("raw_materials_inventory_history")
+          .delete()
+          .in("inventory_id", inventoryIds);
+        if (histErr) throw histErr;
+
+        const { error: logErr } = await supabase
+          .from("raw_materials_transaction_log")
+          .delete()
+          .in("inventory_id", inventoryIds);
+        if (logErr) throw logErr;
+
+        const { error: invErr } = await supabase
+          .from("raw_materials_inventory")
+          .delete()
+          .in("id", inventoryIds);
+        if (invErr) throw invErr;
+      }
+
+      const { error: whErr } = await supabase
+        .from("raw_materials_warehouses")
+        .delete()
+        .eq("raw_material_id", id);
+      if (whErr) throw whErr;
+
+      const { error: staticErr } = await supabase
+        .from("raw_materials_static")
+        .delete()
+        .eq("id", id);
+      if (staticErr) throw staticErr;
+
+      fetchData();
+    } catch (err) {
+      console.error("Delete failed:", err);
+      alert("Delete failed: " + (err.message || "Unknown error"));
+    } finally {
+      setDeletingId(null);
+    }
   }
 
   const q = search.toLowerCase();
@@ -159,7 +252,13 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-1">
                       <Link href={`/products/finished/${p.id}`} className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded-md transition-colors">Edit</Link>
-                      <button onClick={() => deleteFinished(p.id)} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors">Delete</button>
+                      <button
+                        onClick={() => deleteFinished(p.id)}
+                        disabled={deletingId === p.id}
+                        className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {deletingId === p.id ? "Deleting…" : "Delete"}
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -205,7 +304,13 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-right">
                     <div className="inline-flex items-center gap-1">
                       <Link href={`/products/raw/${m.id}`} className="px-3 py-1.5 text-sm text-blue-600 hover:bg-blue-50 rounded-md transition-colors">Edit</Link>
-                      <button onClick={() => deleteRaw(m.id)} className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors">Delete</button>
+                      <button
+                        onClick={() => deleteRaw(m.id)}
+                        disabled={deletingId === m.id}
+                        className="px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        {deletingId === m.id ? "Deleting…" : "Delete"}
+                      </button>
                     </div>
                   </td>
                 </tr>

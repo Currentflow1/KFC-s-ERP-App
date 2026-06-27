@@ -53,7 +53,6 @@ function SearchableSelect({ value, options, onChange, placeholder }) {
   );
 }
 
-// Tag-style multi-warehouse input
 function WarehouseInput({ warehouses, onChange }) {
   const [input, setInput] = useState("");
 

@@ -14,6 +14,7 @@ import {
   writeInventory,
   sanitizeInventoryRow,
   warmPermissionCache,
+  evictStaleQueueEntries,
 } from "@/lib/sync";
 import InventoryHeader from "./components/InventoryHeader";
 import InventoryTable from "./components/InventoryTable";
@@ -48,11 +49,12 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
     onChange(selected.includes(w) ? selected.filter((x) => x !== w) : [...selected, w]);
   }
 
-  const label = selected.length === 0
-    ? "All warehouses"
-    : selected.length === 1
-      ? `Warehouse: ${selected[0]}`
-      : `${selected.length} warehouses`;
+  const label =
+    selected.length === 0
+      ? "All warehouses"
+      : selected.length === 1
+        ? `Warehouse: ${selected[0]}`
+        : `${selected.length} warehouses`;
 
   return (
     <div className="relative" ref={containerRef}>
@@ -75,7 +77,9 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
           <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b border-gray-100">
             <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Warehouses</span>
             {selected.length > 0 && (
-              <button onClick={() => onChange([])} className="text-xs text-blue-600 hover:underline">Clear</button>
+              <button onClick={() => onChange([])} className="text-xs text-blue-600 hover:underline">
+                Clear
+              </button>
             )}
           </div>
           <ul className="max-h-56 overflow-y-auto">
@@ -131,7 +135,7 @@ export default function InventoryPage() {
   function isRawNow() { return tabRef.current === "raw"; }
   function dateNow() { return dateRef.current; }
 
-  // ─── Load warehouses from product warehouse tables ─────────────────────────
+  // ─── Load warehouses ──────────────────────────────────────────────────────
 
   async function loadAvailableWarehouses(whichTab) {
     if (!isOnline()) return;
@@ -163,8 +167,10 @@ export default function InventoryPage() {
     if (!isOnline()) return;
     const isRaw = whichTab === "raw";
     const { data, error } = await supabase
-      .from(histTable(isRaw)).select("id")
-      .eq("inventory_date", todayLocal()).limit(1);
+      .from(histTable(isRaw))
+      .select("id")
+      .eq("inventory_date", todayLocal())
+      .limit(1);
     if (error) { console.error("checkFinalizedFor:", error.message); return; }
     setAlreadyFinalized(!!(data && data.length > 0));
   }
@@ -241,9 +247,10 @@ export default function InventoryPage() {
           loss,
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
-          // Keep product IDs for later upserts
-          raw_material_id: row.raw_material_id,
-          finished_product_id: row.finished_product_id,
+          // Always carry FK columns so snapshots and sanitizeInventoryRow()
+          // never lose them, which was causing the 400 on undo writes.
+          raw_material_id:     row.raw_material_id     ?? null,
+          finished_product_id: row.finished_product_id ?? null,
         };
       });
 
@@ -345,6 +352,9 @@ export default function InventoryPage() {
     const t = "finished";
     async function boot() {
       await resetDailyIfNeeded();
+      // Evict any IndexedDB entries written before the FK fix so they don't
+      // surface as 400s on the next flush. Also clears stale undo snapshots.
+      await evictStaleQueueEntries();
       await saveSnapshot("session", t);
       await Promise.all([
         loadData(t, ""),
@@ -399,8 +409,8 @@ export default function InventoryPage() {
           loss,
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
-          raw_material_id: row.raw_material_id,
-          finished_product_id: row.finished_product_id,
+          raw_material_id:     row.raw_material_id     ?? null,
+          finished_product_id: row.finished_product_id ?? null,
         };
       });
       merged.sort((a, b) =>
@@ -804,7 +814,9 @@ export default function InventoryPage() {
         current_bal: row.actual_bal,
         actual_bal: row.actual_bal,
         loss: row.loss,
-        ...(isRaw ? { raw_material_id: row.raw_material_id } : { finished_product_id: row.finished_product_id }),
+        ...(isRaw
+          ? { raw_material_id: row.raw_material_id }
+          : { finished_product_id: row.finished_product_id }),
       }));
       const { error: e6 } = await supabase
         .from(invTable(isRaw))
@@ -903,9 +915,7 @@ export default function InventoryPage() {
   // ─── filter items by warehouse ─────────────────────────────────────────────
 
   const filteredItems = useMemo(() => {
-    if (warehouseFilter.length === 0) {
-      return items;
-    }
+    if (warehouseFilter.length === 0) return items;
     return items.filter((it) => warehouseFilter.includes(it.warehouse));
   }, [items, warehouseFilter]);
 

@@ -38,6 +38,12 @@ export default function NewInventoryPage() {
         ? "finished_products_inventory"
         : "raw_materials_inventory";
 
+    // The FK column that ties an inventory row back to its static product
+    // record. Without this, the row is unrecognizable to sync.js's
+    // _flushInventory guard, which treats it as a stale/corrupt payload
+    // and silently discards (rather than retries) any future write to it.
+    const fkField = type === "finished" ? "finished_product_id" : "raw_material_id";
+
     const { data: existing, error: fetchError } = await supabase
       .from(inventoryTable)
       .select("*")
@@ -61,12 +67,19 @@ export default function NewInventoryPage() {
     const payload = {
       id:           item.id,
       name:         item.name,
+      // Preserve an existing warehouse if this item already has one;
+      // otherwise fall back to whatever the static record carries.
+      // Leaving this null is what causes the "select=warehouse" lookup
+      // against the static table to blow up later (that table doesn't
+      // have a warehouse column — it only lives on the inventory tables).
+      warehouse:    existing?.warehouse ?? item.warehouse ?? null,
       beg_bal:      beg,
       incoming_bal: incoming,
       outgoing_bal: outgoing,
       current_bal:  current,
       actual_bal:   current,
       loss:         0,
+      [fkField]:    item.id,
     };
 
     const { error } = existing

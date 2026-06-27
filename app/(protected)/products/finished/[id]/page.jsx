@@ -130,7 +130,6 @@ export default function EditFinishedProduct({ params }) {
 
     if (error) { alert("Update failed: " + error.message); return; }
 
-    // Replace all warehouse rows for this product
     await supabase.from("finished_products_warehouses").delete().eq("finished_product_id", id);
     if (warehouses.length > 0) {
       const rows = warehouses.map((w) => ({ finished_product_id: id, warehouse: w }));
