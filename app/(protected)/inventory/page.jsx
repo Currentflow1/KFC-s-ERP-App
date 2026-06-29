@@ -20,13 +20,49 @@ import InventoryHeader from "./components/InventoryHeader";
 import InventoryTable from "./components/InventoryTable";
 import ManipulatePanel from "./components/ManipulationPanel";
 import InventoryCalendar from "./components/InventoryCalendar";
-import InventorySummary from "./components/InventorySummary";
 
-function txTable(r) { return r ? "raw_materials_transaction_log" : "finished_products_transaction_log"; }
-function invTable(r) { return r ? "raw_materials_inventory" : "finished_products_inventory"; }
-function histTable(r) { return r ? "raw_materials_inventory_history" : "finished_products_inventory_history"; }
-function warehouseTable(r) { return r ? "raw_materials_warehouses" : "finished_products_warehouses"; }
-function staticTable(r) { return r ? "raw_materials_static" : "finished_products_static"; }
+// ─── Tab config ───────────────────────────────────────────────────────────
+// Single source of truth for which table each tab reads/writes. Adding a
+// new tab (e.g. "packaging") only requires a new entry here — every other
+// helper below reads from this map instead of branching on isRaw booleans.
+const TAB_CONFIG = {
+  raw: {
+    tx: "raw_materials_transaction_log",
+    inv: "raw_materials_inventory",
+    hist: "raw_materials_inventory_history",
+    wh: "raw_materials_warehouses",
+    static: "raw_materials_static",
+    fk: "raw_material_id",
+    label: "Raw",
+  },
+  finished: {
+    tx: "finished_products_transaction_log",
+    inv: "finished_products_inventory",
+    hist: "finished_products_inventory_history",
+    wh: "finished_products_warehouses",
+    static: "finished_products_static",
+    fk: "finished_product_id",
+    label: "Finished",
+  },
+  packaging: {
+    tx: "packaging_transaction_log",
+    inv: "packaging_inventory",
+    hist: "packaging_inventory_history",
+    wh: "packaging_warehouses",
+    static: "packaging_static",
+    fk: "packaging_id",
+    label: "Packaging",
+  },
+};
+const TAB_ORDER = ["finished", "raw", "packaging"];
+
+function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
+function txTable(tab) { return cfg(tab).tx; }
+function invTable(tab) { return cfg(tab).inv; }
+function histTable(tab) { return cfg(tab).hist; }
+function warehouseTable(tab) { return cfg(tab).wh; }
+function staticTable(tab) { return cfg(tab).static; }
+function fkField(tab) { return cfg(tab).fk; }
 
 function todayLocal() {
   const d = new Date();
@@ -134,15 +170,13 @@ export default function InventoryPage() {
   tabRef.current = tab;
   dateRef.current = date;
 
-  function isRawNow() { return tabRef.current === "raw"; }
   function dateNow() { return dateRef.current; }
 
   // ─── Load warehouses ──────────────────────────────────────────────────────
 
   async function loadAvailableWarehouses(whichTab) {
     if (!isOnline()) return;
-    const isRaw = whichTab === "raw";
-    const table = warehouseTable(isRaw);
+    const table = warehouseTable(whichTab);
 
     try {
       const { data, error } = await supabase
@@ -167,9 +201,8 @@ export default function InventoryPage() {
 
   async function checkFinalizedFor(whichTab) {
     if (!isOnline()) return;
-    const isRaw = whichTab === "raw";
     const { data, error } = await supabase
-      .from(histTable(isRaw))
+      .from(histTable(whichTab))
       .select("id")
       .eq("inventory_date", todayLocal())
       .limit(1);
@@ -196,10 +229,10 @@ export default function InventoryPage() {
   // ─── loadData ─────────────────────────────────────────────────────────────
 
   async function loadData(whichTab, whichDate) {
-    const isRaw = (whichTab ?? tabRef.current) === "raw";
+    const t = whichTab ?? tabRef.current;
     const chosenDate = whichDate ?? dateRef.current;
     const isHistory = chosenDate !== "";
-    const snapKey = isRaw ? "raw" : "finished";
+    const snapKey = t;
 
     if (!isOnline()) {
       if (isHistory) { setItems([]); setUsingOffline(true); return; }
@@ -211,19 +244,19 @@ export default function InventoryPage() {
     setLoading(true);
     try {
       const { data: discData } = await supabase
-        .from(staticTable(isRaw))
+        .from(staticTable(t))
         .select("id")
         .eq("discontinued", true);
       const discontinuedIds = new Set((discData || []).map((r) => r.id));
 
-      let query = supabase.from(isHistory ? histTable(isRaw) : invTable(isRaw)).select("*");
+      let query = supabase.from(isHistory ? histTable(t) : invTable(t)).select("*");
       if (isHistory) query = query.eq("inventory_date", chosenDate);
       const { data: invRows } = await query;
 
       const txTotals = {};
       if (!isHistory) {
         const { data: txRows } = await supabase
-          .from(txTable(isRaw))
+          .from(txTable(t))
           .select("inventory_id, incoming_bal, outgoing_bal")
           .is("finalized_at", null)
           .is("removed_at", null);
@@ -234,6 +267,7 @@ export default function InventoryPage() {
         });
       }
 
+      const fk = fkField(t);
       const merged = (invRows || []).map((row) => {
         const liveId = isHistory ? row.inventory_id : row.id;
         const tx = txTotals[liveId] ?? { incoming: 0, outgoing: 0 };
@@ -244,7 +278,7 @@ export default function InventoryPage() {
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
 
-        const productId = isRaw ? row.raw_material_id : row.finished_product_id;
+        const productId = row[fk];
         const isDiscontinued = discontinuedIds.has(productId ?? liveId);
 
         return {
@@ -260,8 +294,9 @@ export default function InventoryPage() {
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
           _discontinued: isDiscontinued,
-          raw_material_id:     row.raw_material_id     ?? null,
+          raw_material_id: row.raw_material_id ?? null,
           finished_product_id: row.finished_product_id ?? null,
+          packaging_id: row.packaging_id ?? null,
         };
       });
 
@@ -282,17 +317,16 @@ export default function InventoryPage() {
   // ─── snapshots ────────────────────────────────────────────────────────────
 
   async function saveSnapshot(undoType, whichTab) {
-    const isRaw = (whichTab ?? tabRef.current) === "raw";
     const t = whichTab ?? tabRef.current;
     const since = new Date().toISOString();
 
     if (undoType === "item_change") {
       let before;
       if (isOnline()) {
-        const { data } = await supabase.from(invTable(isRaw)).select("*");
+        const { data } = await supabase.from(invTable(t)).select("*");
         before = data || [];
       } else {
-        before = await getInventorySnapshot(isRaw ? "raw" : "finished");
+        before = await getInventorySnapshot(t);
       }
       await pushItemChange(t, before, since);
       if (isOnline()) {
@@ -306,7 +340,7 @@ export default function InventoryPage() {
     }
 
     if (!isOnline()) return since;
-    const { data } = await supabase.from(invTable(isRaw)).select("*");
+    const { data } = await supabase.from(invTable(t)).select("*");
     await supabase.from("undo_log").insert({
       undo_type: undoType,
       tab: t,
@@ -315,11 +349,11 @@ export default function InventoryPage() {
     return since;
   }
 
-  async function saveCloseDaySnapshot(isRaw, whichTab, finalizedTxIds, historyDate) {
-    const { data } = await supabase.from(invTable(isRaw)).select("*");
+  async function saveCloseDaySnapshot(t, finalizedTxIds, historyDate) {
+    const { data } = await supabase.from(invTable(t)).select("*");
     await supabase.from("undo_log").insert({
       undo_type: "close_day",
-      tab: whichTab,
+      tab: t,
       snapshot: { inventory: data || [], finalizedTxIds, historyDate },
     });
   }
@@ -329,9 +363,9 @@ export default function InventoryPage() {
   // ManipulatePanel are inserted with finalized_at already set, so the old
   // filter caused them to be silently skipped during undo, leaving them as
   // active transactions instead of being marked deleted/undone.
-  async function deletePendingTxSince(isRaw, since, inventoryId, reason = "deleted") {
+  async function deletePendingTxSince(t, since, inventoryId, reason = "deleted") {
     let query = supabase
-      .from(txTable(isRaw))
+      .from(txTable(t))
       .update({ removed_at: new Date().toISOString(), removed_reason: reason })
       .is("removed_at", null)
       .gte("created_at", since);
@@ -342,7 +376,6 @@ export default function InventoryPage() {
 
   async function restoreSnapshot(undoType, whichTab) {
     const t = whichTab ?? tabRef.current;
-    const isRaw = t === "raw";
     const { data: logs } = await supabase
       .from("undo_log")
       .select("*")
@@ -354,7 +387,7 @@ export default function InventoryPage() {
     const log = logs[0];
     const rows = Array.isArray(log.snapshot) ? log.snapshot : (log.snapshot?.inventory ?? []);
     if (rows.length > 0) {
-      const { error } = await supabase.from(invTable(isRaw)).upsert(rows, { onConflict: "id" });
+      const { error } = await supabase.from(invTable(t)).upsert(rows, { onConflict: "id" });
       if (error) { alert("Restore failed: " + error.message); return false; }
     }
     await supabase.from("undo_log").delete().eq("id", log.id);
@@ -377,7 +410,10 @@ export default function InventoryPage() {
         loadAvailableWarehouses(t),
       ]);
       setBooted(true);
-      if (isOnline()) prewarmOtherTab("raw");
+      if (isOnline()) {
+        prewarmOtherTab("raw");
+        prewarmOtherTab("packaging");
+      }
     }
     boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,18 +422,18 @@ export default function InventoryPage() {
   // ─── prewarmOtherTab ──────────────────────────────────────────────────────
 
   async function prewarmOtherTab(whichTab) {
-    const isRaw = whichTab === "raw";
+    const t = whichTab;
     try {
       const { data: discData } = await supabase
-        .from(staticTable(isRaw))
+        .from(staticTable(t))
         .select("id")
         .eq("discontinued", true);
       const discontinuedIds = new Set((discData || []).map((r) => r.id));
 
       const [{ data: invRows }, { data: txRows }] = await Promise.all([
-        supabase.from(invTable(isRaw)).select("*"),
+        supabase.from(invTable(t)).select("*"),
         supabase
-          .from(txTable(isRaw))
+          .from(txTable(t))
           .select("inventory_id, incoming_bal, outgoing_bal")
           .is("finalized_at", null)
           .is("removed_at", null),
@@ -408,6 +444,7 @@ export default function InventoryPage() {
         txTotals[inventory_id].incoming += Number(incoming_bal ?? 0);
         txTotals[inventory_id].outgoing += Number(outgoing_bal ?? 0);
       });
+      const fk = fkField(t);
       const merged = (invRows || []).map((row) => {
         const tx = txTotals[row.id] ?? { incoming: 0, outgoing: 0 };
         const beg_bal = Number(row.beg_bal ?? 0);
@@ -416,7 +453,7 @@ export default function InventoryPage() {
         const incoming_bal = Number(row.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
-        const productId = isRaw ? row.raw_material_id : row.finished_product_id;
+        const productId = row[fk];
         return {
           id: row.id,
           name: row.name,
@@ -430,15 +467,16 @@ export default function InventoryPage() {
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
           _discontinued: discontinuedIds.has(productId ?? row.id),
-          raw_material_id:     row.raw_material_id     ?? null,
+          raw_material_id: row.raw_material_id ?? null,
           finished_product_id: row.finished_product_id ?? null,
+          packaging_id: row.packaging_id ?? null,
         };
       });
       merged.sort((a, b) =>
         (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" }) ||
         (a.warehouse ?? "").localeCompare(b.warehouse ?? "", undefined, { sensitivity: "base" })
       );
-      await saveInventorySnapshot(whichTab, merged);
+      await saveInventorySnapshot(t, merged);
     } catch (e) {
       console.error("[InventoryPage] prewarmOtherTab failed:", e);
     }
@@ -463,26 +501,17 @@ export default function InventoryPage() {
   // ─── realtime ─────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const rawSub = supabase
-      .channel("raw-tx-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "raw_materials_transaction_log" },
-        () => { if (isRawNow() && dateNow() === "") loadData("raw", ""); }
-      )
-      .subscribe();
-    const finSub = supabase
-      .channel("fin-tx-live")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "finished_products_transaction_log" },
-        () => { if (!isRawNow() && dateNow() === "") loadData("finished", ""); }
-      )
-      .subscribe();
-    return () => {
-      supabase.removeChannel(rawSub);
-      supabase.removeChannel(finSub);
-    };
+    const subs = TAB_ORDER.map((t) =>
+      supabase
+        .channel(`${t}-tx-live`)
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: txTable(t) },
+          () => { if (tabRef.current === t && dateNow() === "") loadData(t, ""); }
+        )
+        .subscribe()
+    );
+    return () => { subs.forEach((s) => supabase.removeChannel(s)); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -514,7 +543,6 @@ export default function InventoryPage() {
     )
       return;
     const t = tabRef.current;
-    const isRaw = t === "raw";
     setUndoing("item");
 
     const entry = await peekItemChange(t);
@@ -522,10 +550,10 @@ export default function InventoryPage() {
     if (entry) {
       try {
         for (const row of entry.rows) {
-          await writeInventory(invTable(isRaw), row.id, sanitizeInventoryRow(row));
+          await writeInventory(invTable(t), row.id, sanitizeInventoryRow(row));
         }
 
-        const snapKey = isRaw ? "raw" : "finished";
+        const snapKey = t;
         const cached = await getInventorySnapshot(snapKey);
         const revertedIds = new Set(entry.rows.map((r) => r.id));
         const merged = cached.map((item) => {
@@ -557,7 +585,7 @@ export default function InventoryPage() {
         if (isOnline() && entry.since) {
           for (const itemId of revertedIds) {
             try {
-              await deletePendingTxSince(isRaw, entry.since, itemId, "undone_item");
+              await deletePendingTxSince(t, entry.since, itemId, "undone_item");
             } catch (e) {
               console.error("[undoItemChange] failed to delete tx row for", itemId, e.message);
             }
@@ -611,7 +639,7 @@ export default function InventoryPage() {
     const log = logs[0];
     const rows = Array.isArray(log.snapshot) ? log.snapshot : (log.snapshot?.inventory ?? []);
     if (rows.length) {
-      const { error } = await supabase.from(invTable(isRaw)).upsert(rows, { onConflict: "id" });
+      const { error } = await supabase.from(invTable(t)).upsert(rows, { onConflict: "id" });
       if (error) {
         alert("Restore failed: " + error.message);
         setUndoing(null);
@@ -623,13 +651,13 @@ export default function InventoryPage() {
     const since = log.snapshot?.since;
     if (txId) {
       await supabase
-        .from(txTable(isRaw))
+        .from(txTable(t))
         .update({ removed_at: new Date().toISOString(), removed_reason: "undone_item" })
         .eq("id", txId)
         .is("removed_at", null);
     } else if (since) {
       try {
-        await deletePendingTxSince(isRaw, since, undefined, "undone_item");
+        await deletePendingTxSince(t, since, undefined, "undone_item");
       } catch (e) {
         console.error("[undoItemChange fallback] tx delete failed:", e.message);
       }
@@ -653,7 +681,6 @@ export default function InventoryPage() {
     )
       return;
     const t = tabRef.current;
-    const isRaw = t === "raw";
     setUndoing("session");
 
     const result = await restoreSnapshot("session", t);
@@ -667,7 +694,7 @@ export default function InventoryPage() {
       try {
         // FIX: deletePendingTxSince no longer filters by finalized_at,
         // so manipulated rows are now correctly caught and marked as undone_session.
-        await deletePendingTxSince(isRaw, since, undefined, "undone_session");
+        await deletePendingTxSince(t, since, undefined, "undone_session");
       } catch (e) {
         alert(
           "Inventory restored but failed to remove this session's pending orders: " + e.message
@@ -691,7 +718,6 @@ export default function InventoryPage() {
     )
       return;
     const t = tabRef.current;
-    const isRaw = t === "raw";
     setUndoing("close_day");
 
     const result = await restoreSnapshot("close_day", t);
@@ -705,7 +731,7 @@ export default function InventoryPage() {
 
     if (finalizedTxIds.length) {
       const { data: originalRows, error: fetchErr } = await supabase
-        .from(txTable(isRaw))
+        .from(txTable(t))
         .select("*")
         .in("id", finalizedTxIds);
       if (fetchErr) {
@@ -715,7 +741,7 @@ export default function InventoryPage() {
       }
 
       const { error: revertErr } = await supabase
-        .from(txTable(isRaw))
+        .from(txTable(t))
         .update({ removed_at: new Date().toISOString(), removed_reason: "finalize_reverted" })
         .in("id", finalizedTxIds);
       if (revertErr) {
@@ -729,7 +755,7 @@ export default function InventoryPage() {
         return { ...rest, finalized_at: null, removed_at: null, removed_reason: null };
       });
       if (freshRows.length) {
-        const { error: reinsertErr } = await supabase.from(txTable(isRaw)).insert(freshRows);
+        const { error: reinsertErr } = await supabase.from(txTable(t)).insert(freshRows);
         if (reinsertErr) {
           alert("Inventory restored but failed to re-open orders as pending: " + reinsertErr.message);
           setUndoing(null);
@@ -739,7 +765,7 @@ export default function InventoryPage() {
     }
 
     const { error: hErr } = await supabase
-      .from(histTable(isRaw))
+      .from(histTable(t))
       .delete()
       .eq("inventory_date", dateToDelete);
     if (hErr) alert("Undo completed but failed to clear history: " + hErr.message);
@@ -756,7 +782,7 @@ export default function InventoryPage() {
 
   // ─── finalize ─────────────────────────────────────────────────────────────
 
-  async function runFinalize(isRaw, t, { silent = false } = {}) {
+  async function runFinalize(t, { silent = false } = {}) {
     if (!isOnline()) {
       if (!silent) alert("Finalize requires an internet connection.");
       return false;
@@ -764,7 +790,7 @@ export default function InventoryPage() {
     const today = todayLocal();
 
     const { data: existing } = await supabase
-      .from(histTable(isRaw))
+      .from(histTable(t))
       .select("id")
       .eq("inventory_date", today)
       .limit(1);
@@ -778,7 +804,7 @@ export default function InventoryPage() {
 
     if (!silent) {
       const { data: pending } = await supabase
-        .from(txTable(isRaw))
+        .from(txTable(t))
         .select("id")
         .is("finalized_at", null)
         .is("removed_at", null)
@@ -793,17 +819,17 @@ export default function InventoryPage() {
 
     try {
       const { data: txRows, error: e1 } = await supabase
-        .from(txTable(isRaw))
+        .from(txTable(t))
         .select("id, inventory_id, incoming_bal, outgoing_bal")
         .is("finalized_at", null)
         .is("removed_at", null);
       if (e1) throw e1;
 
-      const { data: allInv, error: e2 } = await supabase.from(invTable(isRaw)).select("*");
+      const { data: allInv, error: e2 } = await supabase.from(invTable(t)).select("*");
       if (e2) throw e2;
 
       const finalizedTxIds = (txRows || []).map((r) => r.id);
-      await saveCloseDaySnapshot(isRaw, t, finalizedTxIds, today);
+      await saveCloseDaySnapshot(t, finalizedTxIds, today);
 
       const totals = {};
       (txRows || []).forEach(({ inventory_id, incoming_bal, outgoing_bal }) => {
@@ -824,7 +850,7 @@ export default function InventoryPage() {
       });
 
       const { error: e3 } = await supabase
-        .from(invTable(isRaw))
+        .from(invTable(t))
         .upsert(finalRows, { onConflict: "id" });
       if (e3) throw e3;
 
@@ -841,18 +867,19 @@ export default function InventoryPage() {
         loss: row.loss,
       }));
       const { error: e4 } = await supabase
-        .from(histTable(isRaw))
+        .from(histTable(t))
         .upsert(histRows, { onConflict: "inventory_id, inventory_date" });
       if (e4) throw e4;
 
       if (finalizedTxIds.length) {
         const { error: e5 } = await supabase
-          .from(txTable(isRaw))
+          .from(txTable(t))
           .update({ finalized_at: new Date().toISOString() })
           .in("id", finalizedTxIds);
         if (e5) throw e5;
       }
 
+      const fk = fkField(t);
       const rolled = finalRows.map((row) => ({
         id: row.id,
         name: row.name,
@@ -863,12 +890,10 @@ export default function InventoryPage() {
         current_bal: row.actual_bal,
         actual_bal: row.actual_bal,
         loss: row.loss,
-        ...(isRaw
-          ? { raw_material_id: row.raw_material_id }
-          : { finished_product_id: row.finished_product_id }),
+        [fk]: row[fk],
       }));
       const { error: e6 } = await supabase
-        .from(invTable(isRaw))
+        .from(invTable(t))
         .upsert(rolled, { onConflict: "id" });
       if (e6) throw e6;
 
@@ -883,9 +908,8 @@ export default function InventoryPage() {
 
   async function finalizeDay() {
     const t = tabRef.current;
-    const isRaw = t === "raw";
     setFinalizing(true);
-    const ok = await runFinalize(isRaw, t, { silent: false });
+    const ok = await runFinalize(t, { silent: false });
     setFinalizing(false);
     if (ok) {
       await checkFinalizedFor(t);
@@ -1022,26 +1046,19 @@ export default function InventoryPage() {
 
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
-          <button
-            onClick={() => setTab("finished")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              tab === "finished"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Finished
-          </button>
-          <button
-            onClick={() => setTab("raw")}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              tab === "raw"
-                ? "bg-blue-600 text-white"
-                : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
-          >
-            Raw
-          </button>
+          {TAB_ORDER.map((t, idx) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={`px-4 py-1.5 text-sm font-medium transition-colors ${idx > 0 ? "border-l border-gray-200" : ""} ${
+                tab === t
+                  ? "bg-blue-600 text-white"
+                  : "bg-white text-gray-600 hover:bg-gray-50"
+              }`}
+            >
+              {cfg(t).label}
+            </button>
+          ))}
         </div>
 
         <InventoryCalendar tab={tab} date={date} onSelectDate={setDate} />
@@ -1122,10 +1139,6 @@ export default function InventoryPage() {
             {undoing === "close_day" ? "…" : "↩ Finalize"}
           </button>
         </div>
-      </div>
-
-      <div className="mb-4">
-        <InventorySummary tab={tab} />
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">

@@ -48,17 +48,31 @@ function fmtDateTimeCSV(val) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+// ─── tab → table mapping (Finished / Raw / Packaging) ─────────────────────────
+
 function historyTable(tab) {
-  return tab === "raw" ? "raw_materials_inventory_history" : "finished_products_inventory_history";
+  if (tab === "raw")       return "raw_materials_inventory_history";
+  if (tab === "packaging") return "packaging_inventory_history";
+  return "finished_products_inventory_history";
 }
 function txLogTable(tab) {
-  return tab === "raw" ? "raw_materials_transaction_log" : "finished_products_transaction_log";
+  if (tab === "raw")       return "raw_materials_transaction_log";
+  if (tab === "packaging") return "packaging_transaction_log";
+  return "finished_products_transaction_log";
 }
 function whTable(tab) {
-  return tab === "raw" ? "raw_materials_warehouses" : "finished_products_warehouses";
+  if (tab === "raw")       return "raw_materials_warehouses";
+  if (tab === "packaging") return "packaging_warehouses";
+  return "finished_products_warehouses";
 }
 function whFkCol(tab) {
-  return tab === "raw" ? "raw_material_id" : "finished_product_id";
+  if (tab === "raw")       return "raw_material_id";
+  if (tab === "packaging") return "packaging_id";
+  return "finished_product_id";
+}
+// Raw and Packaging both carry a supplier on incoming stock; Finished does not.
+function hasSupplierCol(tab) {
+  return tab === "raw" || tab === "packaging";
 }
 
 // ─── status helper (mirrors TransactionLogsTable) ─────────────────────────────
@@ -137,7 +151,7 @@ function exportTxCSV(rows, tab) {
     "Product", "Type", "Source", "Status",
     "Incoming", "Outgoing", "Actual", "Loss",
     "Monitoring", "Representative", "Staff",
-    ...(tab === "raw" ? ["Supplier"] : []),
+    ...(hasSupplierCol(tab) ? ["Supplier"] : []),
     "Warehouse",
   ];
   const data = rows.map((r) => {
@@ -152,7 +166,7 @@ function exportTxCSV(rows, tab) {
       raw(r.incoming_bal), raw(r.outgoing_bal),
       r.actual_bal ?? "", raw(r.loss),
       r.monitoring_employee ?? "", r.representative_employee ?? "", r.staff_employee ?? "",
-      ...(tab === "raw" ? [r.supplier_name ?? ""] : []),
+      ...(hasSupplierCol(tab) ? [r.supplier_name ?? ""] : []),
       r.warehouse ?? "",
     ];
   });
@@ -160,7 +174,7 @@ function exportTxCSV(rows, tab) {
 }
 
 function exportAllCSV(histRows, txRows, tab) {
-  const isRaw = tab === "raw";
+  const supplierCol = hasSupplierCol(tab);
   const headers = [
     "Section",
     "Date / Created At", "Finalized At", "Product",
@@ -168,7 +182,7 @@ function exportAllCSV(histRows, txRows, tab) {
     "Incoming", "Outgoing", "Loss",
     "Type", "Source", "Status",
     "Monitoring", "Representative", "Staff",
-    ...(isRaw ? ["Supplier"] : []),
+    ...(supplierCol ? ["Supplier"] : []),
     "Warehouse",
     "Recorded At",
   ];
@@ -180,7 +194,7 @@ function exportAllCSV(histRows, txRows, tab) {
     raw(r.incoming_bal), raw(r.outgoing_bal), raw(r.loss),
     "", "", "",
     "", "", "",
-    ...(isRaw ? [""] : []),
+    ...(supplierCol ? [""] : []),
     r.warehouse ?? "",
     fmtDateTimeCSV(r.created_at),
   ]);
@@ -200,7 +214,7 @@ function exportAllCSV(histRows, txRows, tab) {
       r.transaction_source === "manipulated" ? "Manual" : "Ordered",
       statusLabel(status),
       r.monitoring_employee ?? "", r.representative_employee ?? "", r.staff_employee ?? "",
-      ...(isRaw ? [r.supplier_name ?? ""] : []),
+      ...(supplierCol ? [r.supplier_name ?? ""] : []),
       r.warehouse ?? "",
       "",
     ];
@@ -216,7 +230,7 @@ function col(value, width, align = "left") {
   return align === "right" ? s.padStart(width) : s.padEnd(width);
 }
 
-function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, period, isRaw }) {
+function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, period, hasSupplier }) {
   const W       = 132;
   const divider = "-".repeat(W);
   const title   = `INVENTORY RECORDS — ${tab.toUpperCase()} MATERIALS`;
@@ -282,7 +296,7 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
     col("Type",        14), col("Source",       12), col("Status",   16),
     col("In",  8, "right"), col("Out", 8, "right"),
     col("Monitoring", 18), col("Rep.", 16),
-    ...(isRaw ? [col("Supplier", 18)] : []),
+    ...(hasSupplier ? [col("Supplier", 18)] : []),
     col("Warehouse", 14),
   ];
   lines.push(txHdr.join(""));
@@ -303,7 +317,7 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
         col(raw(r.outgoing_bal),  8, "right"),
         col(r.monitoring_employee ?? "",    18),
         col(r.representative_employee ?? "", 16),
-        ...(isRaw ? [col(r.supplier_name ?? "", 18)] : []),
+        ...(hasSupplier ? [col(r.supplier_name ?? "", 18)] : []),
         col(r.warehouse ?? "", 14),
       ];
       lines.push(rowCols.join(""));
@@ -636,7 +650,7 @@ export default function RecordsPage() {
     txRows:   enrichedTxRows.map((r)  => ({ ...r, warehouse: r._warehouse })),
     active: period === "weekly" ? weekly : monthly,
     period,
-    isRaw: tab === "raw",
+    hasSupplier: hasSupplierCol(tab),
   });
 
   // ── derived ───────────────────────────────────────────────────────────────
@@ -657,7 +671,7 @@ export default function RecordsPage() {
     "Product", "Type", "Source", "Status",
     "In", "Out", "Actual", "Loss",
     "Monitoring", "Representative", "Staff",
-    ...(tab === "raw" ? ["Supplier"] : []),
+    ...(hasSupplierCol(tab) ? ["Supplier"] : []),
     "Warehouse",
   ];
 
@@ -707,6 +721,10 @@ export default function RecordsPage() {
           <button onClick={() => setTab("raw")}
             className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             Raw
+          </button>
+          <button onClick={() => setTab("packaging")}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "packaging" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            Packaging
           </button>
         </div>
 
@@ -970,7 +988,7 @@ export default function RecordsPage() {
                             <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>
                             <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.representative_employee ?? "—"}</td>
                             <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.staff_employee ?? "—"}</td>
-                            {tab === "raw" && (
+                            {hasSupplierCol(tab) && (
                               <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.supplier_name ?? "—"}</td>
                             )}
                             <td className={`px-4 py-2.5 text-gray-400 whitespace-nowrap ${dimClass}`}>{row._warehouse}</td>

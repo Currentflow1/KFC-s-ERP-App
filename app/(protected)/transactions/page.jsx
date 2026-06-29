@@ -4,30 +4,18 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabaseClient";
 import TransactionCalendar from "./components/TransactionalCalendar";
 
-const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
+const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished", PACKAGING: "packaging" };
 
-// transaction_source — "ordered" | "manipulated"
-// transaction_type   — "stock_movement" | "count_correction"
-// removed_at / removed_reason — set when a row is soft-removed instead of
-//   hard-deleted:
-//     'deleted'           — Order Table Delete
-//     'undone_item'       — Inventory Undo Item
-//     'undone_session'    — Inventory Undo Session
-//     'undone'            — legacy rows written before item/session undo
-//                            were distinguished
-//     'finalize_reverted' — Inventory Undo Finalize (the original finalized
-//                            row is kept as a permanent record; a fresh
-//                            pending row is re-inserted in its place)
-//   NULL means still active.
-//
-//   Display note: 'deleted', 'undone_item', 'undone_session', and legacy
-//   'undone' all collapse into a single "Deleted" status below — the
-//   specific removed_reason is preserved in the DB and shown in the status
-//   badge's tooltip, but the badge itself no longer distinguishes an Order
-//   Table delete from an Inventory undo.
-// actual_bal / loss  — populated on all "manipulated" rows
 const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, staff_employee, supplier_name, product_name, warehouse, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
 const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, staff_employee, product_name, warehouse, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
+
+// packaging_transaction_log has the same columns as raw_materials_transaction_log
+// (including supplier_name), so it reuses RAW_SELECT.
+const TX_CONFIG = {
+  raw:       { table: "raw_materials_transaction_log",     select: RAW_SELECT, hasSupplier: true,  label: "Raw Materials" },
+  finished:  { table: "finished_products_transaction_log", select: FIN_SELECT, hasSupplier: false, label: "Finished Products" },
+  packaging: { table: "packaging_transaction_log",         select: RAW_SELECT, hasSupplier: true,  label: "Packaging" },
+};
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
@@ -73,13 +61,13 @@ export default function TransactionLogsTable() {
     return () => window.removeEventListener("resize", measure);
   });
 
-  const isRaw = productType === PRODUCT_TYPE.RAW;
+  const cfg = TX_CONFIG[productType] ?? TX_CONFIG.finished;
+  const isRaw = productType === PRODUCT_TYPE.RAW; // kept for raw-specific copy only (none currently)
 
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const table  = isRaw ? "raw_materials_transaction_log" : "finished_products_transaction_log";
-    const select = isRaw ? RAW_SELECT : FIN_SELECT;
+    const { table, select } = TX_CONFIG[productType] ?? TX_CONFIG.finished;
     try {
       const { data, error: fetchError } = await supabase
         .from(table)
@@ -144,7 +132,7 @@ export default function TransactionLogsTable() {
   }, [fetchLogs]);
 
   useEffect(() => {
-    const table = isRaw ? "raw_materials_transaction_log" : "finished_products_transaction_log";
+    const { table } = TX_CONFIG[productType] ?? TX_CONFIG.finished;
     const sub = supabase
       .channel(`tx-log-live-${table}`)
       .on("postgres_changes", { event: "*", schema: "public", table }, () => {
@@ -153,7 +141,7 @@ export default function TransactionLogsTable() {
       .subscribe();
     return () => { supabase.removeChannel(sub); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRaw]);
+  }, [productType]);
 
   function formatDateTime(isoString) {
     const date = new Date(isoString);
@@ -255,7 +243,7 @@ export default function TransactionLogsTable() {
           <button
             onClick={() => setProductType(PRODUCT_TYPE.RAW)}
             className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              productType === PRODUCT_TYPE.RAW ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
             }`}
           >
             Raw Materials
@@ -263,10 +251,18 @@ export default function TransactionLogsTable() {
           <button
             onClick={() => setProductType(PRODUCT_TYPE.FINISHED)}
             className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              !isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              productType === PRODUCT_TYPE.FINISHED ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
             }`}
           >
             Finished Products
+          </button>
+          <button
+            onClick={() => setProductType(PRODUCT_TYPE.PACKAGING)}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
+              productType === PRODUCT_TYPE.PACKAGING ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            Packaging
           </button>
         </div>
 
@@ -355,7 +351,7 @@ export default function TransactionLogsTable() {
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Balance After</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actual Count</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Loss</th>
-                  {isRaw && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
+                  {cfg.hasSupplier && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Staff</th>
@@ -502,7 +498,7 @@ export default function TransactionLogsTable() {
                         )}
                       </td>
 
-                      {isRaw && (
+                      {cfg.hasSupplier && (
                         <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                           {row.supplier_name ?? <span className="text-gray-300">—</span>}
                         </td>

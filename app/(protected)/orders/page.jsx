@@ -3,8 +3,35 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
-const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
+const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished", PACKAGING: "packaging" };
 const STOCK_TYPE   = { INCOMING: "incoming", OUTGOING: "outgoing" };
+
+// Single source of truth for which tables + supplier requirement each
+// product type uses. Packaging mirrors Raw Materials (supplier required
+// on incoming stock); Finished Products has no supplier.
+const TAB_CONFIG = {
+  raw: {
+    tx:   "raw_materials_transaction_log",
+    inv:  "raw_materials_inventory",
+    hist: "raw_materials_inventory_history",
+    hasSupplier: true,
+    label: "Raw Materials",
+  },
+  finished: {
+    tx:   "finished_products_transaction_log",
+    inv:  "finished_products_inventory",
+    hist: "finished_products_inventory_history",
+    hasSupplier: false,
+    label: "Finished Products",
+  },
+  packaging: {
+    tx:   "packaging_transaction_log",
+    inv:  "packaging_inventory",
+    hist: "packaging_inventory_history",
+    hasSupplier: true,
+    label: "Packaging",
+  },
+};
 
 function isOnline() {
   return typeof navigator === "undefined" ? true : navigator.onLine;
@@ -204,36 +231,40 @@ export default function OrderTable() {
 
   // Products shaped as { name, warehouse } — only active (non-discontinued) products.
   // Each product can appear multiple times (once per warehouse).
-  const [rawProducts, setRawProducts]           = useState([]);
-  const [finishedProducts, setFinishedProducts] = useState([]);
+  const [rawProducts, setRawProducts]               = useState([]);
+  const [finishedProducts, setFinishedProducts]     = useState([]);
+  const [packagingProducts, setPackagingProducts]   = useState([]);
 
-  const isRaw        = productType === PRODUCT_TYPE.RAW;
-  const isIncoming   = stockType   === STOCK_TYPE.INCOMING;
-  const showSupplier = isRaw && isIncoming;
+  const tabCfg       = TAB_CONFIG[productType] ?? TAB_CONFIG.raw;
+  const isIncoming   = stockType === STOCK_TYPE.INCOMING;
+  const showSupplier = tabCfg.hasSupplier && isIncoming;
 
-  const txTableName   = isRaw ? "raw_materials_transaction_log"    : "finished_products_transaction_log";
-  const invTableName  = isRaw ? "raw_materials_inventory"          : "finished_products_inventory";
-  const histTableName = isRaw ? "raw_materials_inventory_history"  : "finished_products_inventory_history";
+  const txTableName   = tabCfg.tx;
+  const invTableName  = tabCfg.inv;
+  const histTableName = tabCfg.hist;
+
+  // Products for the active product type
+  const activeProducts =
+    productType === PRODUCT_TYPE.RAW       ? rawProducts :
+    productType === PRODUCT_TYPE.PACKAGING ? packagingProducts :
+    finishedProducts;
 
   // All unique warehouses for the active product type (from active products only)
   const warehouseOptions = useMemo(() => {
-    const source = isRaw ? rawProducts : finishedProducts;
-    return [...new Set(source.map((p) => p.warehouse).filter(Boolean))].sort();
-  }, [isRaw, rawProducts, finishedProducts]);
+    return [...new Set(activeProducts.map((p) => p.warehouse).filter(Boolean))].sort();
+  }, [activeProducts]);
 
   // Product names filtered by selected warehouse in the add form
   const productOptions = useMemo(() => {
-    const source = isRaw ? rawProducts : finishedProducts;
-    if (!formData.warehouse) return [...new Set(source.map((p) => p.name))];
-    return source.filter((p) => p.warehouse === formData.warehouse).map((p) => p.name);
-  }, [isRaw, rawProducts, finishedProducts, formData.warehouse]);
+    if (!formData.warehouse) return [...new Set(activeProducts.map((p) => p.name))];
+    return activeProducts.filter((p) => p.warehouse === formData.warehouse).map((p) => p.name);
+  }, [activeProducts, formData.warehouse]);
 
   // Product names filtered by selected warehouse in edit mode
   const editProductOptions = useMemo(() => {
-    const source = isRaw ? rawProducts : finishedProducts;
-    if (!editData.warehouse) return [...new Set(source.map((p) => p.name))];
-    return source.filter((p) => p.warehouse === editData.warehouse).map((p) => p.name);
-  }, [isRaw, rawProducts, finishedProducts, editData.warehouse]);
+    if (!editData.warehouse) return [...new Set(activeProducts.map((p) => p.name))];
+    return activeProducts.filter((p) => p.warehouse === editData.warehouse).map((p) => p.name);
+  }, [activeProducts, editData.warehouse]);
 
   // ── Offline detection ─────────────────────────────────────────────────────
 
@@ -307,7 +338,7 @@ export default function OrderTable() {
 
   async function fetchOptions() {
     if (!isOnline()) return;
-    const [mon, rep, staff, sup, rawJunction, finJunction] = await Promise.all([
+    const [mon, rep, staff, sup, rawJunction, finJunction, pkgJunction] = await Promise.all([
       supabase.from("monitoring_employee").select("name"),
       supabase.from("representative_employee").select("name"),
       supabase.from("staff_employee").select("name"),
@@ -322,6 +353,11 @@ export default function OrderTable() {
         .from("finished_products_warehouses")
         .select("warehouse, finished_products_static!inner(name, discontinued)")
         .eq("finished_products_static.discontinued", false),
+      // Join packaging_warehouses → packaging_static, excluding discontinued
+      supabase
+        .from("packaging_warehouses")
+        .select("warehouse, packaging_static!inner(name, discontinued)")
+        .eq("packaging_static.discontinued", false),
     ]);
 
     setMonitoringOptions(mon.data?.map((r) => r.name) ?? []);
@@ -342,6 +378,12 @@ export default function OrderTable() {
       (finJunction.data ?? [])
         .filter((r) => r.finished_products_static?.name && !r.finished_products_static?.discontinued)
         .map((r) => ({ name: r.finished_products_static.name, warehouse: r.warehouse }))
+    );
+
+    setPackagingProducts(
+      (pkgJunction.data ?? [])
+        .filter((r) => r.packaging_static?.name && !r.packaging_static?.discontinued)
+        .map((r) => ({ name: r.packaging_static.name, warehouse: r.warehouse }))
     );
   }
 
@@ -386,10 +428,9 @@ export default function OrderTable() {
 
   function handleWarehouseChange(warehouse) {
     setFormData((prev) => {
-      const source = isRaw ? rawProducts : finishedProducts;
       const validNames = warehouse
-        ? source.filter((p) => p.warehouse === warehouse).map((p) => p.name)
-        : [...new Set(source.map((p) => p.name))];
+        ? activeProducts.filter((p) => p.warehouse === warehouse).map((p) => p.name)
+        : [...new Set(activeProducts.map((p) => p.name))];
       return {
         ...prev,
         warehouse,
@@ -400,10 +441,9 @@ export default function OrderTable() {
 
   function handleEditWarehouseChange(warehouse) {
     setEditData((prev) => {
-      const source = isRaw ? rawProducts : finishedProducts;
       const validNames = warehouse
-        ? source.filter((p) => p.warehouse === warehouse).map((p) => p.name)
-        : [...new Set(source.map((p) => p.name))];
+        ? activeProducts.filter((p) => p.warehouse === warehouse).map((p) => p.name)
+        : [...new Set(activeProducts.map((p) => p.name))];
       return {
         ...prev,
         warehouse,
@@ -434,7 +474,7 @@ export default function OrderTable() {
     if (!formData.warehouse)                              { setError("Select a warehouse."); return; }
     if (!formData.monitoring_employee)                    { setError("Select a monitoring employee."); return; }
     if (!isIncoming && !formData.representative_employee) { setError("Select a representative employee."); return; }
-    if (isRaw && isIncoming && !formData.supplier_name)   { setError("Select a supplier."); return; }
+    if (showSupplier && !formData.supplier_name)          { setError("Select a supplier."); return; }
     if (!formData.product_name)                           { setError("Select a product."); return; }
     if (!qty || qty <= 0)                                 { setError("Enter a valid quantity."); return; }
 
@@ -453,7 +493,7 @@ export default function OrderTable() {
         transaction_source:       "ordered",
         transaction_type:         "stock_movement",
         created_by:               userId,
-        ...(isRaw ? { supplier_name: isIncoming ? formData.supplier_name : null } : {}),
+        ...(tabCfg.hasSupplier ? { supplier_name: isIncoming ? formData.supplier_name : null } : {}),
       };
       const { error: insertError } = await supabase.from(txTableName).insert([payload]);
       if (insertError) throw insertError;
@@ -485,7 +525,7 @@ export default function OrderTable() {
         warehouse:                editData.warehouse,
         incoming_bal:             Number(editData.incoming_bal ?? 0),
         outgoing_bal:             Number(editData.outgoing_bal ?? 0),
-        ...(isRaw ? {
+        ...(tabCfg.hasSupplier ? {
           supplier_name: Number(editData.incoming_bal ?? 0) > 0
             ? (editData.supplier_name || null) : null,
         } : {}),
@@ -579,12 +619,16 @@ export default function OrderTable() {
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button onClick={() => setProductType(PRODUCT_TYPE.RAW)}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${productType === PRODUCT_TYPE.RAW ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             Raw Materials
           </button>
           <button onClick={() => setProductType(PRODUCT_TYPE.FINISHED)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${!isRaw ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.FINISHED ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
             Finished Products
+          </button>
+          <button onClick={() => setProductType(PRODUCT_TYPE.PACKAGING)}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.PACKAGING ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            Packaging
           </button>
         </div>
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
@@ -611,7 +655,7 @@ export default function OrderTable() {
       <div className={`bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-5 transition-opacity ${isFinalized ? "opacity-60" : ""}`}>
         <h2 className="text-sm font-semibold text-gray-900 mb-4">
           {isIncoming ? "Add Incoming Order" : "Add Outgoing Order"}
-          <span className="ml-2 text-gray-400 font-normal">— {isRaw ? "Raw Materials" : "Finished Products"}</span>
+          <span className="ml-2 text-gray-400 font-normal">— {tabCfg.label}</span>
         </h2>
 
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">

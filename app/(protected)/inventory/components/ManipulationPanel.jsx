@@ -10,6 +10,33 @@ import {
   patchInventorySnapshot,
 } from "@/lib/sync";
 
+// ─── Tab config (mirrors InventoryPage) ──────────────────────────────────────
+const TAB_CONFIG = {
+  raw: {
+    inv:        "raw_materials_inventory",
+    tx:         "raw_materials_transaction_log",
+    snapshotKey:"raw",
+    fk:         "raw_material_id",
+    hasSupplier: true,   // incoming raw materials need a supplier
+  },
+  finished: {
+    inv:        "finished_products_inventory",
+    tx:         "finished_products_transaction_log",
+    snapshotKey:"finished",
+    fk:         "finished_product_id",
+    hasSupplier: false,
+  },
+  packaging: {
+    inv:        "packaging_inventory",
+    tx:         "packaging_transaction_log",
+    snapshotKey:"packaging",
+    fk:         "packaging_id",
+    hasSupplier: true,   // packaging also has a supplier on incoming
+  },
+};
+
+function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
+
 function isOnline() {
   return typeof navigator === "undefined" ? true : navigator.onLine;
 }
@@ -88,8 +115,6 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   );
 }
 
-// Same hash-based blue/green assignment used in InventoryTable, kept in sync
-// so a given warehouse always shows the same color in both places.
 function warehouseStyle(name) {
   if (!name) return null;
   let hash = 0;
@@ -102,22 +127,19 @@ function warehouseStyle(name) {
 export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocalPatch, isFinalized = false }) {
   const supabase = createClient();
 
-  const isRaw       = tab === "raw";
-  const table       = isRaw ? "raw_materials_inventory"        : "finished_products_inventory";
-  const txLogTable  = isRaw ? "raw_materials_transaction_log"  : "finished_products_transaction_log";
-  const snapshotKey = isRaw ? "raw"                            : "finished";
+  // ─── Derive everything from TAB_CONFIG — no more isRaw booleans ───────────
+  const tabCfg      = cfg(tab);
+  const table       = tabCfg.inv;
+  const txLogTable  = tabCfg.tx;
+  const snapshotKey = tabCfg.snapshotKey;
+  const fkField     = tabCfg.fk;
+  const fkValue     = item[fkField] ?? null;
 
-  // FK column required by every inventory row (NOT NULL in schema, and
-  // checked by sync.js's _flushInventory guard before it will queue/retry
-  // a write). `item` already carries this from InventoryPage's merge step,
-  // so we just read it straight off — never re-derive or look it up again.
-  const fkField = isRaw ? "raw_material_id" : "finished_product_id";
-  const fkValue = item[fkField] ?? null;
-
-  // ── Stock direction — mirrors Orders module ───────────────────────────────
+  // ── Stock direction ───────────────────────────────────────────────────────
   const [stockMode, setStockMode] = useState("incoming");
-  const isIncoming = stockMode === "incoming";
-  const showSupplier = isRaw && isIncoming;
+  const isIncoming   = stockMode === "incoming";
+  // Show supplier when the tab supports it AND we're adding incoming stock
+  const showSupplier = tabCfg.hasSupplier && isIncoming;
 
   // ── Form state ────────────────────────────────────────────────────────────
   const [qty,                    setQty]                    = useState("");
@@ -140,23 +162,15 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   const [staffOptions,          setStaffOptions]          = useState([]);
   const [supplierOptions,       setSupplierOptions]       = useState([]);
 
-  // Warehouse comes straight from the item passed in by InventoryPage —
-  // that row was already merged with `warehouse` from the inventory table,
-  // so there is no need to re-fetch it from anywhere here.
   const [warehouse, setWarehouse] = useState(item.warehouse ?? null);
 
-  // Keep warehouse in sync with the active item. Without this, if this
-  // component instance ever got reused across two different items (e.g. the
-  // parent didn't remount it via `key`), it kept showing the *previous*
-  // item's warehouse — the "building differentiator" bug. This effect is a
-  // safety net on top of the parent now passing `key={item.id}`.
   useEffect(() => {
     setWarehouse(item.warehouse ?? null);
   }, [item.id, item.warehouse]);
 
-  const displayedCurrent = Number(item.current_bal     ?? 0);
-  const pendingIn        = Number(item._pendingIncoming ?? 0);
-  const pendingOut       = Number(item._pendingOutgoing ?? 0);
+  const displayedCurrent = Number(item.current_bal      ?? 0);
+  const pendingIn        = Number(item._pendingIncoming  ?? 0);
+  const pendingOut       = Number(item._pendingOutgoing  ?? 0);
 
   // ── Init: permissions + options ───────────────────────────────────────────
 
@@ -175,10 +189,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
       if (cancelled) return;
       setRole(r ?? "staff");
       setUserId(u ?? null);
-      setMonitoringOptions(m   ?? []);
+      setMonitoringOptions(m    ?? []);
       setRepresentativeOptions(rep ?? []);
       setStaffOptions(staff ?? []);
-      setSupplierOptions(sup   ?? []);
+      setSupplierOptions(sup    ?? []);
       setOfflineMode(true);
     }
 
@@ -206,11 +220,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         ]);
         if (cancelled) return;
 
-        const resolvedRole  = profile?.role ?? "staff";
-        const monNames      = (monRows   ?? []).map((r) => r.name);
-        const repNames      = (repRows   ?? []).map((r) => r.name);
-        const staffNames    = (staffRows ?? []).map((r) => r.name).filter(Boolean);
-        const supNames      = (supRows   ?? []).map((r) => r.contact_person).filter((n) => n !== "N/A");
+        const resolvedRole = profile?.role ?? "staff";
+        const monNames     = (monRows   ?? []).map((r) => r.name);
+        const repNames     = (repRows   ?? []).map((r) => r.name);
+        const staffNames   = (staffRows ?? []).map((r) => r.name).filter(Boolean);
+        const supNames     = (supRows   ?? []).map((r) => r.contact_person).filter((n) => n !== "N/A");
 
         setRole(resolvedRole);
         setMonitoringOptions(monNames);
@@ -234,7 +248,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── Validation — same rules as Orders ────────────────────────────────────
+  // ── Validation ────────────────────────────────────────────────────────────
 
   function validate() {
     if (!monitoringEmployee) {
@@ -244,7 +258,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
       setTxError("Select a representative employee for outgoing."); return false;
     }
     if (showSupplier && !supplierName) {
-      setTxError("Select a supplier for incoming raw materials."); return false;
+      setTxError("Select a supplier for incoming stock."); return false;
     }
     const q = Number(qty || 0);
     if (!q || q <= 0) {
@@ -255,9 +269,6 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   }
 
   // ── Tx log payload ────────────────────────────────────────────────────────
-  // Includes `warehouse` so the log records where the movement happened —
-  // mirrors the `warehouse` column on raw_materials_transaction_log /
-  // finished_products_transaction_log.
 
   function buildTxPayload({ mode, q, actual_bal, loss, txType }) {
     return {
@@ -265,7 +276,8 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
       monitoring_employee:     monitoringEmployee,
       representative_employee: representativeEmployee || null,
       staff_employee:          staffEmployee || null,
-      ...(isRaw ? { supplier_name: showSupplier ? (supplierName || null) : null } : {}),
+      // supplier_name only exists on raw + packaging tx log tables
+      ...(tabCfg.hasSupplier ? { supplier_name: showSupplier ? (supplierName || null) : null } : {}),
       product_name:            item.name,
       incoming_bal:            txType === "stock_movement" && mode === "in"  ? q : 0,
       outgoing_bal:            txType === "stock_movement" && mode === "out" ? q : 0,
@@ -282,12 +294,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   // ── Apply IN / OUT ────────────────────────────────────────────────────────
 
   async function applyChange() {
-    // ─── FINALIZATION SAFETY CHECK ───
     if (isFinalized) {
       setTxError("🔒 Today is finalized. You cannot edit inventory.");
       return;
     }
-
     if (!validate()) return;
     const q    = Number(qty);
     const mode = isIncoming ? "in" : "out";
@@ -324,9 +334,6 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         beg_bal: beg, incoming_bal: incoming, outgoing_bal: outgoing,
         current_bal, actual_bal, loss,
         warehouse: warehouse || null,
-        // Required FK — without this the row gets permanently rejected by
-        // sync.js's _flushInventory guard ("missing finished_product_id" /
-        // "missing raw_material_id") if it ever lands in the write queue.
         [fkField]: fkValue,
       };
       const txPayload = buildTxPayload({ mode, q, actual_bal, loss, txType: "stock_movement" });
@@ -357,12 +364,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   // ── Set actual count ──────────────────────────────────────────────────────
 
   async function setActualValue() {
-    // ─── FINALIZATION SAFETY CHECK ───
     if (isFinalized) {
       setTxError("🔒 Today is finalized. You cannot edit inventory.");
       return;
     }
-
     if (actual === "") return;
     if (!monitoringEmployee) { setTxError("Select a monitoring employee."); return; }
     setTxError(null);
@@ -394,7 +399,6 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         beg_bal, incoming_bal, outgoing_bal, current_bal,
         actual_bal: a, loss,
         warehouse: warehouse || null,
-        // Same FK requirement as applyChange() above.
         [fkField]: fkValue,
       };
       const txPayload = buildTxPayload({ mode: null, q: 0, actual_bal: a, loss, txType: "count_correction" });
@@ -455,6 +459,9 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
   // ── Admin panel ───────────────────────────────────────────────────────────
 
+  // Human-readable label for the tab type shown in the section header
+  const tabLabel = tab === "raw" ? "Raw Material" : tab === "packaging" ? "Packaging" : "Finished Product";
+
   return (
     <div className={`fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10 max-h-[90vh] overflow-y-auto transition-opacity ${isFinalized ? "opacity-60 pointer-events-none" : ""}`}>
 
@@ -463,9 +470,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         <div>
           <h2 className="font-bold text-base leading-tight">{item.name}</h2>
           {warehouse && (
-            <span
-              className={`inline-flex items-center gap-1 text-xs font-semibold mt-1 px-2 py-0.5 rounded-full ${warehouseStyle(warehouse)}`}
-            >
+            <span className={`inline-flex items-center gap-1 text-xs font-semibold mt-1 px-2 py-0.5 rounded-full ${warehouseStyle(warehouse)}`}>
               📦 {warehouse}
             </span>
           )}
@@ -473,12 +478,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-2 shrink-0">✕</button>
       </div>
 
-      {/* ─── FINALIZATION LOCK BANNER FOR PANEL ─── */}
+      {/* Finalization lock banner */}
       {isFinalized && (
         <div className="mb-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700">
           <div className="font-semibold flex items-center gap-1">
-            <span>🔒</span>
-            Panel Locked
+            <span>🔒</span> Panel Locked
           </div>
           <p className="mt-1 text-red-600">Today is finalized. Undo to make changes.</p>
         </div>
@@ -516,11 +520,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         </div>
       )}
 
-      {/* ── Section: Stock Movement — mirrors Orders exactly ── */}
+      {/* ── Stock Movement ── */}
       <div className="border-t border-gray-100 pt-3">
         <p className="text-xs font-semibold text-gray-700 mb-3">
           {isIncoming ? "Add Incoming" : "Add Outgoing"}
-          <span className="ml-1.5 text-gray-400 font-normal">— {isRaw ? "Raw Material" : "Finished Product"}</span>
+          <span className="ml-1.5 text-gray-400 font-normal">— {tabLabel}</span>
         </p>
 
         {/* Incoming / Outgoing toggle */}
@@ -547,7 +551,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
         <div className="space-y-3">
 
-          {/* Monitoring — always shown, same as Orders */}
+          {/* Monitoring — always shown */}
           <SearchableSelect
             label="Monitoring"
             value={monitoringEmployee}
@@ -557,7 +561,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             disabled={isFinalized}
           />
 
-          {/* Representative — outgoing only (required), optional incoming */}
+          {/* Representative — outgoing only (required) */}
           {!isIncoming && (
             <SearchableSelect
               label="Representative"
@@ -569,7 +573,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             />
           )}
 
-          {/* Staff — outgoing only, sourced from staff_employee table (Employees module) */}
+          {/* Staff — outgoing only */}
           {!isIncoming && (
             <SearchableSelect
               label="Staff"
@@ -581,7 +585,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             />
           )}
 
-          {/* Supplier — raw + incoming only, same as Orders */}
+          {/* Supplier — raw + packaging incoming only */}
           {showSupplier && (
             <SearchableSelect
               label="Supplier"
@@ -624,11 +628,10 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         </div>
       </div>
 
-      {/* ── Section: Set actual count ── */}
+      {/* ── Count Correction ── */}
       <div className="border-t border-gray-100 pt-3 mt-3 space-y-2">
         <p className="text-xs font-semibold text-gray-700 mb-2">Count Correction</p>
 
-        {/* Monitoring for actual count — reuses same field */}
         {!monitoringEmployee && (
           <p className="text-xs text-amber-600">Select a monitoring employee above first.</p>
         )}
