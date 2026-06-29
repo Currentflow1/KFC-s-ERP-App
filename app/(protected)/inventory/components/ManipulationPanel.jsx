@@ -88,6 +88,17 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   );
 }
 
+// Same hash-based blue/green assignment used in InventoryTable, kept in sync
+// so a given warehouse always shows the same color in both places.
+function warehouseStyle(name) {
+  if (!name) return null;
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return hash % 2 === 0
+    ? "bg-blue-100 text-black border border-blue-200"
+    : "bg-green-100 text-black border border-green-200";
+}
+
 export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocalPatch, isFinalized = false }) {
   const supabase = createClient();
 
@@ -128,10 +139,20 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   const [representativeOptions, setRepresentativeOptions] = useState([]);
   const [staffOptions,          setStaffOptions]          = useState([]);
   const [supplierOptions,       setSupplierOptions]       = useState([]);
+
   // Warehouse comes straight from the item passed in by InventoryPage —
   // that row was already merged with `warehouse` from the inventory table,
   // so there is no need to re-fetch it from anywhere here.
-  const [warehouse,             setWarehouse]             = useState(item.warehouse ?? null);
+  const [warehouse, setWarehouse] = useState(item.warehouse ?? null);
+
+  // Keep warehouse in sync with the active item. Without this, if this
+  // component instance ever got reused across two different items (e.g. the
+  // parent didn't remount it via `key`), it kept showing the *previous*
+  // item's warehouse — the "building differentiator" bug. This effect is a
+  // safety net on top of the parent now passing `key={item.id}`.
+  useEffect(() => {
+    setWarehouse(item.warehouse ?? null);
+  }, [item.id, item.warehouse]);
 
   const displayedCurrent = Number(item.current_bal     ?? 0);
   const pendingIn        = Number(item._pendingIncoming ?? 0);
@@ -442,7 +463,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         <div>
           <h2 className="font-bold text-base leading-tight">{item.name}</h2>
           {warehouse && (
-            <span className="text-xs text-gray-400 mt-0.5 block">📦 {warehouse}</span>
+            <span
+              className={`inline-flex items-center gap-1 text-xs font-semibold mt-1 px-2 py-0.5 rounded-full ${warehouseStyle(warehouse)}`}
+            >
+              📦 {warehouse}
+            </span>
           )}
         </div>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-2 shrink-0">✕</button>

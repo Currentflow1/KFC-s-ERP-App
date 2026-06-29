@@ -26,6 +26,7 @@ function txTable(r) { return r ? "raw_materials_transaction_log" : "finished_pro
 function invTable(r) { return r ? "raw_materials_inventory" : "finished_products_inventory"; }
 function histTable(r) { return r ? "raw_materials_inventory_history" : "finished_products_inventory_history"; }
 function warehouseTable(r) { return r ? "raw_materials_warehouses" : "finished_products_warehouses"; }
+function staticTable(r) { return r ? "raw_materials_static" : "finished_products_static"; }
 
 function todayLocal() {
   const d = new Date();
@@ -126,6 +127,7 @@ export default function InventoryPage() {
   const [manipulationError, setManipulationError] = useState(null);
   const [warehouseFilter, setWarehouseFilter] = useState([]);
   const [availableWarehouses, setAvailableWarehouses] = useState([]);
+  const [search, setSearch] = useState("");
 
   const tabRef = useRef("finished");
   const dateRef = useRef("");
@@ -208,6 +210,12 @@ export default function InventoryPage() {
 
     setLoading(true);
     try {
+      const { data: discData } = await supabase
+        .from(staticTable(isRaw))
+        .select("id")
+        .eq("discontinued", true);
+      const discontinuedIds = new Set((discData || []).map((r) => r.id));
+
       let query = supabase.from(isHistory ? histTable(isRaw) : invTable(isRaw)).select("*");
       if (isHistory) query = query.eq("inventory_date", chosenDate);
       const { data: invRows } = await query;
@@ -235,6 +243,10 @@ export default function InventoryPage() {
         const incoming_bal = Number(row.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
+
+        const productId = isRaw ? row.raw_material_id : row.finished_product_id;
+        const isDiscontinued = discontinuedIds.has(productId ?? liveId);
+
         return {
           id: liveId,
           name: row.name,
@@ -247,8 +259,7 @@ export default function InventoryPage() {
           loss,
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
-          // Always carry FK columns so snapshots and sanitizeInventoryRow()
-          // never lose them, which was causing the 400 on undo writes.
+          _discontinued: isDiscontinued,
           raw_material_id:     row.raw_material_id     ?? null,
           finished_product_id: row.finished_product_id ?? null,
         };
@@ -313,11 +324,15 @@ export default function InventoryPage() {
     });
   }
 
-  async function deletePendingTxSince(isRaw, since, inventoryId) {
+  // ─── deletePendingTxSince ─────────────────────────────────────────────────
+  // FIX: Removed `.is("finalized_at", null)` filter — manipulated rows from
+  // ManipulatePanel are inserted with finalized_at already set, so the old
+  // filter caused them to be silently skipped during undo, leaving them as
+  // active transactions instead of being marked deleted/undone.
+  async function deletePendingTxSince(isRaw, since, inventoryId, reason = "deleted") {
     let query = supabase
       .from(txTable(isRaw))
-      .update({ removed_at: new Date().toISOString(), removed_reason: "undone" })
-      .is("finalized_at", null)
+      .update({ removed_at: new Date().toISOString(), removed_reason: reason })
       .is("removed_at", null)
       .gte("created_at", since);
     if (inventoryId) query = query.eq("inventory_id", inventoryId);
@@ -352,8 +367,6 @@ export default function InventoryPage() {
     const t = "finished";
     async function boot() {
       await resetDailyIfNeeded();
-      // Evict any IndexedDB entries written before the FK fix so they don't
-      // surface as 400s on the next flush. Also clears stale undo snapshots.
       await evictStaleQueueEntries();
       await saveSnapshot("session", t);
       await Promise.all([
@@ -375,6 +388,12 @@ export default function InventoryPage() {
   async function prewarmOtherTab(whichTab) {
     const isRaw = whichTab === "raw";
     try {
+      const { data: discData } = await supabase
+        .from(staticTable(isRaw))
+        .select("id")
+        .eq("discontinued", true);
+      const discontinuedIds = new Set((discData || []).map((r) => r.id));
+
       const [{ data: invRows }, { data: txRows }] = await Promise.all([
         supabase.from(invTable(isRaw)).select("*"),
         supabase
@@ -397,6 +416,7 @@ export default function InventoryPage() {
         const incoming_bal = Number(row.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
+        const productId = isRaw ? row.raw_material_id : row.finished_product_id;
         return {
           id: row.id,
           name: row.name,
@@ -409,6 +429,7 @@ export default function InventoryPage() {
           loss,
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
+          _discontinued: discontinuedIds.has(productId ?? row.id),
           raw_material_id:     row.raw_material_id     ?? null,
           finished_product_id: row.finished_product_id ?? null,
         };
@@ -435,6 +456,7 @@ export default function InventoryPage() {
     loadAvailableWarehouses(t);
     setManipulationError(null);
     setWarehouseFilter([]);
+    setSearch("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, date, booted]);
 
@@ -529,10 +551,13 @@ export default function InventoryPage() {
         await saveInventorySnapshot(snapKey, merged);
         setItems(merged);
 
+        // FIX: deletePendingTxSince no longer filters by finalized_at,
+        // so manipulated rows (pre-finalized by ManipulatePanel) are now
+        // correctly caught and marked as undone_item.
         if (isOnline() && entry.since) {
           for (const itemId of revertedIds) {
             try {
-              await deletePendingTxSince(isRaw, entry.since, itemId);
+              await deletePendingTxSince(isRaw, entry.since, itemId, "undone_item");
             } catch (e) {
               console.error("[undoItemChange] failed to delete tx row for", itemId, e.message);
             }
@@ -599,13 +624,12 @@ export default function InventoryPage() {
     if (txId) {
       await supabase
         .from(txTable(isRaw))
-        .update({ removed_at: new Date().toISOString(), removed_reason: "undone" })
+        .update({ removed_at: new Date().toISOString(), removed_reason: "undone_item" })
         .eq("id", txId)
-        .is("finalized_at", null)
         .is("removed_at", null);
     } else if (since) {
       try {
-        await deletePendingTxSince(isRaw, since);
+        await deletePendingTxSince(isRaw, since, undefined, "undone_item");
       } catch (e) {
         console.error("[undoItemChange fallback] tx delete failed:", e.message);
       }
@@ -641,7 +665,9 @@ export default function InventoryPage() {
     const since = result.snapshot?.since;
     if (since) {
       try {
-        await deletePendingTxSince(isRaw, since);
+        // FIX: deletePendingTxSince no longer filters by finalized_at,
+        // so manipulated rows are now correctly caught and marked as undone_session.
+        await deletePendingTxSince(isRaw, since, undefined, "undone_session");
       } catch (e) {
         alert(
           "Inventory restored but failed to remove this session's pending orders: " + e.message
@@ -678,14 +704,37 @@ export default function InventoryPage() {
     const dateToDelete = historyDate || todayLocal();
 
     if (finalizedTxIds.length) {
-      const { error } = await supabase
+      const { data: originalRows, error: fetchErr } = await supabase
         .from(txTable(isRaw))
-        .update({ finalized_at: null })
+        .select("*")
         .in("id", finalizedTxIds);
-      if (error) {
-        alert("Inventory restored but failed to un-finalize orders: " + error.message);
+      if (fetchErr) {
+        alert("Inventory restored but failed to read finalized orders: " + fetchErr.message);
         setUndoing(null);
         return;
+      }
+
+      const { error: revertErr } = await supabase
+        .from(txTable(isRaw))
+        .update({ removed_at: new Date().toISOString(), removed_reason: "finalize_reverted" })
+        .in("id", finalizedTxIds);
+      if (revertErr) {
+        alert("Inventory restored but failed to mark orders as reverted: " + revertErr.message);
+        setUndoing(null);
+        return;
+      }
+
+      const freshRows = (originalRows ?? []).map((row) => {
+        const { id, created_at, finalized_at, removed_at, removed_reason, ...rest } = row;
+        return { ...rest, finalized_at: null, removed_at: null, removed_reason: null };
+      });
+      if (freshRows.length) {
+        const { error: reinsertErr } = await supabase.from(txTable(isRaw)).insert(freshRows);
+        if (reinsertErr) {
+          alert("Inventory restored but failed to re-open orders as pending: " + reinsertErr.message);
+          setUndoing(null);
+          return;
+        }
       }
     }
 
@@ -896,6 +945,13 @@ export default function InventoryPage() {
   }
 
   function handleSelectItem(item) {
+    if (item._discontinued) {
+      setManipulationError(
+        "⛔ This product is discontinued and cannot be edited. Re-activate it in the Products page first."
+      );
+      return;
+    }
+
     if (alreadyFinalized && date === "") {
       setManipulationError(
         "🔒 Today is finalized. You cannot edit inventory balances. Please undo the finalize or wait until tomorrow."
@@ -912,12 +968,22 @@ export default function InventoryPage() {
     );
   }, []);
 
-  // ─── filter items by warehouse ─────────────────────────────────────────────
+  // ─── filter items ─────────────────────────────────────────────────────────
 
   const filteredItems = useMemo(() => {
-    if (warehouseFilter.length === 0) return items;
-    return items.filter((it) => warehouseFilter.includes(it.warehouse));
-  }, [items, warehouseFilter]);
+    let result = items;
+
+    if (warehouseFilter.length > 0) {
+      result = result.filter((it) => warehouseFilter.includes(it.warehouse));
+    }
+
+    const q = search.trim().toLowerCase();
+    if (q) {
+      result = result.filter((it) => (it.name ?? "").toLowerCase().includes(q));
+    }
+
+    return result;
+  }, [items, warehouseFilter, search]);
 
   // ─── render ───────────────────────────────────────────────────────────────
 
@@ -985,6 +1051,24 @@ export default function InventoryPage() {
           selected={warehouseFilter}
           onChange={setWarehouseFilter}
         />
+
+        <div className="relative">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search products…"
+            className="border border-gray-200 rounded-md pl-3 pr-7 py-1.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-44 sm:w-56"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch("")}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+            >
+              ✕
+            </button>
+          )}
+        </div>
 
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
 
@@ -1056,6 +1140,7 @@ export default function InventoryPage() {
 
       {activeItem && (
         <ManipulatePanel
+          key={activeItem.id}
           item={activeItem}
           tab={tab}
           onClose={() => setActiveItem(null)}

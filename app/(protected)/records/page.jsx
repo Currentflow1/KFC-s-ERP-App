@@ -43,9 +43,9 @@ function fmtDateTime(val) {
 
 function fmtDateTimeCSV(val) {
   if (!val) return "";
-  const d = new Date(val);
+  const d   = new Date(val);
   const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
 function historyTable(tab) {
@@ -60,32 +60,38 @@ function whTable(tab) {
 function whFkCol(tab) {
   return tab === "raw" ? "raw_material_id" : "finished_product_id";
 }
-function staticTable(tab) {
-  return tab === "raw" ? "raw_materials_static" : "finished_products_static";
+
+// ─── status helper (mirrors TransactionLogsTable) ─────────────────────────────
+// Returns one of: "pending" | "finalized" | "deleted" | "undone_item" |
+//                 "undone_session" | "undone" (legacy) | "reverted"
+
+function getTxStatus(row) {
+  if (row.removed_at) {
+    if (row.removed_reason === "deleted")           return "deleted";
+    if (row.removed_reason === "finalize_reverted") return "reverted";
+    if (row.removed_reason === "undone_item")       return "undone_item";
+    if (row.removed_reason === "undone_session")    return "undone_session";
+    return "undone"; // legacy fallback for old rows written before the distinction
+  }
+  if (row.finalized_at) return "finalized";
+  return "pending";
 }
 
-// ─── warehouse map ────────────────────────────────────────────────────────────
-
-async function buildWarehouseMap(supabase, tab) {
-  const fkCol = whFkCol(tab);
-  const { data, error } = await supabase
-    .from(whTable(tab))
-    .select(`${fkCol}, warehouse`);
-  if (error) { console.error("buildWarehouseMap:", error.message); return {}; }
-  const map = {};
-  (data || []).forEach((row) => {
-    const id = row[fkCol];
-    if (!map[id]) map[id] = [];
-    map[id].push(row.warehouse);
-  });
-  return map;
+function isRemovedStatus(status) {
+  return status === "deleted" || status === "undone_item" || status === "undone_session" || status === "undone" || status === "reverted";
 }
 
-// Builds inventoryId → warehouses[] map via inventory table (id matches static id)
-async function buildInventoryWarehouseMap(supabase, tab) {
-  // inventory rows share the same id as static rows
-  const wMap = await buildWarehouseMap(supabase, tab);
-  return wMap; // keyed by static/inventory id
+function statusLabel(status) {
+  switch (status) {
+    case "finalized":     return "Finalized";
+    case "pending":       return "Pending";
+    case "deleted":       return "Deleted";
+    case "undone_item":   return "Undo item";
+    case "undone_session":return "Undo session";
+    case "undone":        return "Undone";
+    case "reverted":      return "Reopened";
+    default:              return status;
+  }
 }
 
 // ─── CSV export ───────────────────────────────────────────────────────────────
@@ -128,24 +134,28 @@ function exportHistoryCSV(rows, tab) {
 function exportTxCSV(rows, tab) {
   const headers = [
     "Created At", "Finalized At",
-    "Product", "Type", "Source",
+    "Product", "Type", "Source", "Status",
     "Incoming", "Outgoing", "Actual", "Loss",
     "Monitoring", "Representative", "Staff",
     ...(tab === "raw" ? ["Supplier"] : []),
     "Warehouse",
   ];
-  const data = rows.map((r) => [
-    fmtDateTimeCSV(r.created_at),
-    fmtDateTimeCSV(r.finalized_at),
-    r.product_name,
-    r.transaction_type === "count_correction" ? "Count correction" : "Stock movement",
-    r.transaction_source === "manipulated" ? "Manual" : r.finalized_at ? "Finalized" : "Pending",
-    raw(r.incoming_bal), raw(r.outgoing_bal),
-    r.actual_bal ?? "", raw(r.loss),
-    r.monitoring_employee ?? "", r.representative_employee ?? "", r.staff_employee ?? "",
-    ...(tab === "raw" ? [r.supplier_name ?? ""] : []),
-    r.warehouse ?? "",
-  ]);
+  const data = rows.map((r) => {
+    const status = getTxStatus(r);
+    return [
+      fmtDateTimeCSV(r.created_at),
+      fmtDateTimeCSV(r.finalized_at),
+      r.product_name,
+      r.transaction_type === "count_correction" ? "Count correction" : "Stock movement",
+      r.transaction_source === "manipulated" ? "Manual" : "Ordered",
+      statusLabel(status),
+      raw(r.incoming_bal), raw(r.outgoing_bal),
+      r.actual_bal ?? "", raw(r.loss),
+      r.monitoring_employee ?? "", r.representative_employee ?? "", r.staff_employee ?? "",
+      ...(tab === "raw" ? [r.supplier_name ?? ""] : []),
+      r.warehouse ?? "",
+    ];
+  });
   downloadCSV(`transaction-log-${tab}-${todayLocal()}.csv`, headers, data);
 }
 
@@ -156,7 +166,7 @@ function exportAllCSV(histRows, txRows, tab) {
     "Date / Created At", "Finalized At", "Product",
     "Beg", "Current", "Actual",
     "Incoming", "Outgoing", "Loss",
-    "Type", "Source",
+    "Type", "Source", "Status",
     "Monitoring", "Representative", "Staff",
     ...(isRaw ? ["Supplier"] : []),
     "Warehouse",
@@ -168,7 +178,7 @@ function exportAllCSV(histRows, txRows, tab) {
     r.inventory_date, "", r.name,
     raw(r.beg_bal), raw(r.current_bal), raw(r.actual_bal),
     raw(r.incoming_bal), raw(r.outgoing_bal), raw(r.loss),
-    "", "",
+    "", "", "",
     "", "", "",
     ...(isRaw ? [""] : []),
     r.warehouse ?? "",
@@ -177,20 +187,24 @@ function exportAllCSV(histRows, txRows, tab) {
 
   const sep = headers.map((_, i) => i === 0 ? "--- Transaction Log ---" : "");
 
-  const txData = txRows.map((r) => [
-    "Transaction Log",
-    fmtDateTimeCSV(r.created_at),
-    fmtDateTimeCSV(r.finalized_at),
-    r.product_name,
-    "", "", "",
-    raw(r.incoming_bal), raw(r.outgoing_bal), raw(r.loss),
-    r.transaction_type === "count_correction" ? "Count correction" : "Stock movement",
-    r.transaction_source === "manipulated" ? "Manual" : r.finalized_at ? "Finalized" : "Pending",
-    r.monitoring_employee ?? "", r.representative_employee ?? "", r.staff_employee ?? "",
-    ...(isRaw ? [r.supplier_name ?? ""] : []),
-    r.warehouse ?? "",
-    "",
-  ]);
+  const txData = txRows.map((r) => {
+    const status = getTxStatus(r);
+    return [
+      "Transaction Log",
+      fmtDateTimeCSV(r.created_at),
+      fmtDateTimeCSV(r.finalized_at),
+      r.product_name,
+      "", "", "",
+      raw(r.incoming_bal), raw(r.outgoing_bal), raw(r.loss),
+      r.transaction_type === "count_correction" ? "Count correction" : "Stock movement",
+      r.transaction_source === "manipulated" ? "Manual" : "Ordered",
+      statusLabel(status),
+      r.monitoring_employee ?? "", r.representative_employee ?? "", r.staff_employee ?? "",
+      ...(isRaw ? [r.supplier_name ?? ""] : []),
+      r.warehouse ?? "",
+      "",
+    ];
+  });
 
   downloadCSV(`all-records-${tab}-${todayLocal()}.csv`, headers, [...histData, sep, ...txData]);
 }
@@ -208,10 +222,12 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
   const title   = `INVENTORY RECORDS — ${tab.toUpperCase()} MATERIALS`;
   const filter  = dateFrom || dateTo
     ? `Period: ${dateFrom || "start"} to ${dateTo || todayLocal()}`
-    : `Printed: ${new Date().toLocaleString(undefined, { year:"numeric",month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:true })}`;
+    : `Printed: ${new Date().toLocaleString(undefined, {
+        year: "numeric", month: "short", day: "numeric",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+      })}`;
 
   const lines = [];
-
   lines.push(title.padStart(Math.floor((W + title.length) / 2)));
   lines.push(filter);
   lines.push("");
@@ -262,7 +278,8 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
   lines.push("TRANSACTION LOG");
   lines.push(divider);
   const txHdr = [
-    col("Created At",  22), col("Finalized At", 22), col("Product",  22), col("Type",   14), col("Source", 12),
+    col("Created At",  22), col("Finalized At", 22), col("Product",  22),
+    col("Type",        14), col("Source",       12), col("Status",   16),
     col("In",  8, "right"), col("Out", 8, "right"),
     col("Monitoring", 18), col("Rep.", 16),
     ...(isRaw ? [col("Supplier", 18)] : []),
@@ -274,12 +291,14 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
     lines.push("  (no transactions)");
   } else {
     txRows.forEach((r) => {
+      const status = getTxStatus(r);
       const rowCols = [
         col(fmtDateTimeCSV(r.created_at),   22),
         col(fmtDateTimeCSV(r.finalized_at), 22),
         col(r.product_name ?? "",           22),
         col(r.transaction_type === "count_correction" ? "Count corr." : "Stock move", 14),
-        col(r.transaction_source === "manipulated" ? "Manual" : r.finalized_at ? "Finalized" : "Pending", 12),
+        col(r.transaction_source === "manipulated" ? "Manual" : "Ordered", 12),
+        col(statusLabel(status), 16),
         col(raw(r.incoming_bal),  8, "right"),
         col(raw(r.outgoing_bal),  8, "right"),
         col(r.monitoring_employee ?? "",    18),
@@ -327,7 +346,7 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
 </style>
 </head>
 <body>
-<pre>${preContent.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}</pre>
+<pre>${preContent.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
 <script>window.onload = function(){ window.print(); }<\/script>
 </body>
 </html>`;
@@ -366,9 +385,11 @@ function Badge({ children, color = "gray" }) {
     blue:   "bg-blue-50 text-blue-700",
     amber:  "bg-amber-50 text-amber-700",
     purple: "bg-purple-50 text-purple-700",
+    slate:  "bg-slate-100 text-slate-600 border border-slate-200",
+    orange: "bg-orange-50 text-orange-700 border border-orange-200",
   };
   return (
-    <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${colors[color]}`}>
+    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium ${colors[color]}`}>
       {children}
     </span>
   );
@@ -390,10 +411,7 @@ function IconButton({ onClick, title, children, disabled = false }) {
 function SectionHeader({ title, count, countLabel, open, onToggle, actions }) {
   return (
     <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
-      <button
-        onClick={onToggle}
-        className="flex items-center gap-2 text-left group"
-      >
+      <button onClick={onToggle} className="flex items-center gap-2 text-left group">
         <span className={`text-gray-400 text-xs transition-transform duration-200 ${open ? "rotate-90" : ""}`}>▶</span>
         <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">{title}</span>
         {count > 0 && (
@@ -407,6 +425,70 @@ function SectionHeader({ title, count, countLabel, open, onToggle, actions }) {
       )}
     </div>
   );
+}
+
+// Status badge — mirrors the 6-state badge system in TransactionLogsTable
+function TxStatusBadge({ row }) {
+  const status = getTxStatus(row);
+  const ts = row.removed_at ? fmtDateTime(row.removed_at) : null;
+
+  if (status === "finalized") {
+    return (
+      <Badge color="green">
+        <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+        Finalized
+      </Badge>
+    );
+  }
+  if (status === "pending") {
+    return (
+      <Badge color="amber">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 inline-block" />
+        Pending
+      </Badge>
+    );
+  }
+  if (status === "deleted") {
+    return (
+      <span title={ts ? `Deleted ${ts}` : undefined}>
+        <Badge color="red">
+          <span className="w-1.5 h-1.5 rounded-full bg-red-500 inline-block" />
+          Deleted
+        </Badge>
+      </span>
+    );
+  }
+  if (status === "undone_item" || status === "undone") {
+    return (
+      <span title={ts ? `Undo item ${ts}` : undefined}>
+        <Badge color="gray">
+          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 inline-block" />
+          ↩ Undo item
+        </Badge>
+      </span>
+    );
+  }
+  if (status === "undone_session") {
+    return (
+      <span title={ts ? `Undo session ${ts}` : undefined}>
+        <Badge color="slate">
+          <span className="w-1.5 h-1.5 rounded-full bg-slate-400 inline-block" />
+          ↩ Undo session
+        </Badge>
+      </span>
+    );
+  }
+  if (status === "reverted") {
+    return (
+      <span title={ts ? `Finalize undone ${ts} — reopened as a new pending order` : undefined}>
+        <Badge color="orange">
+          <span className="w-1.5 h-1.5 rounded-full bg-orange-500 inline-block" />
+          ↺ Reopened
+        </Badge>
+      </span>
+    );
+  }
+  return <Badge color="gray">{status}</Badge>;
 }
 
 // ─── main page ────────────────────────────────────────────────────────────────
@@ -432,7 +514,6 @@ export default function RecordsPage() {
   const [txLoad, setTxLoad] = useState(false);
   const [txOpen, setTxOpen] = useState(true);
 
-  // warehouse maps: inventoryId → warehouse string
   const [histWarehouseMap, setHistWarehouseMap] = useState({});
   const [txWarehouseMap,   setTxWarehouseMap]   = useState({});
 
@@ -456,7 +537,6 @@ export default function RecordsPage() {
       if (!map[id]) map[id] = [];
       map[id].push(row.warehouse);
     });
-    // Single string per id for display
     const strMap = {};
     Object.entries(map).forEach(([id, arr]) => { strMap[id] = arr.join(", "); });
     setHistWarehouseMap(strMap);
@@ -490,15 +570,15 @@ export default function RecordsPage() {
     if (from) q = q.gte("inventory_date", from);
     if (to)   q = q.lte("inventory_date", to);
     const { data } = await q;
-    // Attach inventory_id-based warehouse from map — history rows have inventory_id
     setHistRows(data || []);
     setHistLoad(false);
   }
 
   async function loadTxLog(whichTab, from, to) {
     setTxLoad(true); setTxPage(1);
+    // NOTE: removed_at filter intentionally omitted — we want ALL rows including
+    // deleted / undone / reverted so the status badges are visible in the log.
     let q = supabase.from(txLogTable(whichTab)).select("*")
-      .is("removed_at", null)
       .order("created_at", { ascending: false });
     if (from) q = q.gte("created_at", from);
     if (to)   q = q.lte("created_at", to + "T23:59:59.999Z");
@@ -526,19 +606,17 @@ export default function RecordsPage() {
     loadTxLog(tab, "", "");
   }
 
-  // Resolve warehouse for a history row: prefer row.warehouse, fallback to map via inventory_id
   function resolveHistWarehouse(row) {
     if (row.warehouse) return row.warehouse;
     return histWarehouseMap[row.inventory_id] ?? "—";
   }
 
-  // Resolve warehouse for a tx row: prefer row.warehouse, fallback to map via inventory_id
   function resolveTxWarehouse(row) {
     if (row.warehouse) return row.warehouse;
     return txWarehouseMap[row.inventory_id] ?? "—";
   }
 
-  // ── enriched rows (warehouse attached) ───────────────────────────────────
+  // ── enriched rows ─────────────────────────────────────────────────────────
 
   const enrichedHistRows = histRows.map((r) => ({
     ...r,
@@ -571,6 +649,17 @@ export default function RecordsPage() {
   const histPages = Math.ceil(enrichedHistRows.length / PAGE);
   const txSlice   = enrichedTxRows.slice((txPage - 1) * PAGE, txPage * PAGE);
   const txPages   = Math.ceil(enrichedTxRows.length / PAGE);
+
+  // ── tx table headers ──────────────────────────────────────────────────────
+
+  const txHeaders = [
+    "Created At", "Finalized At",
+    "Product", "Type", "Source", "Status",
+    "In", "Out", "Actual", "Loss",
+    "Monitoring", "Representative", "Staff",
+    ...(tab === "raw" ? ["Supplier"] : []),
+    "Warehouse",
+  ];
 
   // ── render ────────────────────────────────────────────────────────────────
 
@@ -725,7 +814,7 @@ export default function RecordsPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50">
-                        {["Date","Product","Beg","Incoming","Outgoing","Current","Actual","Loss","Warehouse","Recorded At"].map((h) => (
+                        {["Date", "Product", "Beg", "Incoming", "Outgoing", "Current", "Actual", "Loss", "Warehouse", "Recorded At"].map((h) => (
                           <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
@@ -809,60 +898,82 @@ export default function RecordsPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50">
-                        {[
-                          "Created At", "Finalized At",
-                          "Product", "Type", "Source",
-                          "In", "Out", "Actual", "Loss",
-                          "Monitoring", "Representative", "Staff",
-                          ...(tab === "raw" ? ["Supplier"] : []),
-                          "Warehouse",
-                        ].map((h) => (
+                        {txHeaders.map((h) => (
                           <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
                       {txSlice.map((row) => {
-                        const isManipulated = row.transaction_source === "manipulated";
-                        const isCorrection  = row.transaction_type   === "count_correction";
+                        const status      = getTxStatus(row);
+                        const removed     = isRemovedStatus(status);
+                        const isManip     = row.transaction_source === "manipulated";
+                        const isCorr      = row.transaction_type   === "count_correction";
+                        const dimClass    = removed ? "opacity-50 line-through" : "";
+                        const rowBg       =
+                          status === "deleted"       ? "bg-red-50/40 border-l-4 border-red-300" :
+                          status === "undone_item"   ? "bg-gray-50/70 border-l-4 border-slate-300" :
+                          status === "undone_session"? "bg-gray-50/70 border-l-4 border-slate-300" :
+                          status === "undone"        ? "bg-gray-50/70 border-l-4 border-slate-300" :
+                          status === "reverted"      ? "bg-orange-50/40 border-l-4 border-orange-300" :
+                          isCorr                     ? "bg-purple-50/30" : "";
+
                         return (
-                          <tr key={row.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs">{fmtDateTime(row.created_at)}</td>
-                            <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs">{fmtDateTime(row.finalized_at)}</td>
-                            <td className="px-4 py-2.5 font-medium text-gray-800">{row.product_name}</td>
-                            <td className="px-4 py-2.5">
-                              {isCorrection
-                                ? <Badge color="purple">Count correction</Badge>
-                                : <Badge color="blue">Stock movement</Badge>}
+                          <tr key={row.id} className={`hover:bg-gray-50 transition-colors ${rowBg}`}>
+                            <td className={`px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs ${dimClass}`}>
+                              {fmtDateTime(row.created_at)}
                             </td>
-                            <td className="px-4 py-2.5">
-                              {isManipulated
-                                ? <Badge color="amber">Manual</Badge>
-                                : row.finalized_at
-                                  ? <Badge color="green">Finalized</Badge>
-                                  : <Badge color="gray">Pending</Badge>}
+                            <td className={`px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs ${dimClass}`}>
+                              {fmtDateTime(row.finalized_at)}
                             </td>
-                            <td className="px-4 py-2.5 text-green-600 font-medium">
+                            <td className={`px-4 py-2.5 font-medium text-gray-800 ${dimClass}`}>
+                              {row.product_name}
+                            </td>
+
+                            {/* Type */}
+                            <td className="px-4 py-2.5">
+                              <span className={dimClass}>
+                                {isCorr
+                                  ? <Badge color="purple">🔢 Count correction</Badge>
+                                  : <Badge color="blue">Stock movement</Badge>}
+                              </span>
+                            </td>
+
+                            {/* Source */}
+                            <td className="px-4 py-2.5">
+                              <span className={dimClass}>
+                                {isManip
+                                  ? <Badge color="amber">⚙ Manual</Badge>
+                                  : <Badge color="gray">📋 Ordered</Badge>}
+                              </span>
+                            </td>
+
+                            {/* Status — 6-state badge */}
+                            <td className="px-4 py-2.5">
+                              <TxStatusBadge row={row} />
+                            </td>
+
+                            <td className={`px-4 py-2.5 text-green-600 font-medium ${dimClass}`}>
                               {Number(row.incoming_bal) > 0 ? fmt(row.incoming_bal) : <span className="text-gray-300">—</span>}
                             </td>
-                            <td className="px-4 py-2.5 text-red-500 font-medium">
+                            <td className={`px-4 py-2.5 text-red-500 font-medium ${dimClass}`}>
                               {Number(row.outgoing_bal) > 0 ? fmt(row.outgoing_bal) : <span className="text-gray-300">—</span>}
                             </td>
-                            <td className="px-4 py-2.5 text-gray-600">
+                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>
                               {row.actual_bal != null ? fmt(row.actual_bal) : <span className="text-gray-300">—</span>}
                             </td>
                             <td className="px-4 py-2.5">
                               {Number(row.loss) > 0
-                                ? <span className="text-orange-500 font-medium">{fmt(row.loss)}</span>
+                                ? <span className={`text-orange-500 font-medium ${dimClass}`}>{fmt(row.loss)}</span>
                                 : <span className="text-gray-300">—</span>}
                             </td>
-                            <td className="px-4 py-2.5 text-gray-600">{row.monitoring_employee ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-gray-600">{row.representative_employee ?? "—"}</td>
-                            <td className="px-4 py-2.5 text-gray-600">{row.staff_employee ?? "—"}</td>
+                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>
+                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.representative_employee ?? "—"}</td>
+                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.staff_employee ?? "—"}</td>
                             {tab === "raw" && (
-                              <td className="px-4 py-2.5 text-gray-600">{row.supplier_name ?? "—"}</td>
+                              <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.supplier_name ?? "—"}</td>
                             )}
-                            <td className="px-4 py-2.5 text-gray-400 whitespace-nowrap">{row._warehouse}</td>
+                            <td className={`px-4 py-2.5 text-gray-400 whitespace-nowrap ${dimClass}`}>{row._warehouse}</td>
                           </tr>
                         );
                       })}

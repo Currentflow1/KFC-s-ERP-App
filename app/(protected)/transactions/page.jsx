@@ -9,8 +9,22 @@ const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished" };
 // transaction_source — "ordered" | "manipulated"
 // transaction_type   — "stock_movement" | "count_correction"
 // removed_at / removed_reason — set when a row is soft-removed instead of
-//   hard-deleted: 'deleted' (Order Table Delete) or 'undone' (Inventory
-//   Undo Item / Undo Session). NULL means still active.
+//   hard-deleted:
+//     'deleted'           — Order Table Delete
+//     'undone_item'       — Inventory Undo Item
+//     'undone_session'    — Inventory Undo Session
+//     'undone'            — legacy rows written before item/session undo
+//                            were distinguished
+//     'finalize_reverted' — Inventory Undo Finalize (the original finalized
+//                            row is kept as a permanent record; a fresh
+//                            pending row is re-inserted in its place)
+//   NULL means still active.
+//
+//   Display note: 'deleted', 'undone_item', 'undone_session', and legacy
+//   'undone' all collapse into a single "Deleted" status below — the
+//   specific removed_reason is preserved in the DB and shown in the status
+//   badge's tooltip, but the badge itself no longer distinguishes an Order
+//   Table delete from an Inventory undo.
 // actual_bal / loss  — populated on all "manipulated" rows
 const RAW_SELECT = "id, inventory_id, monitoring_employee, representative_employee, staff_employee, supplier_name, product_name, warehouse, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
 const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employee, staff_employee, product_name, warehouse, incoming_bal, outgoing_bal, actual_bal, loss, created_at, created_by, finalized_at, removed_at, removed_reason, transaction_source, transaction_type";
@@ -29,13 +43,10 @@ export default function TransactionLogsTable() {
   const [selectedDate, setSelectedDate] = useState("");
 
   // ── Top scrollbar sync ───────────────────────────────────────────────────
-  // A thin scrollbar pinned above the table, mirroring the table's actual
-  // horizontal scroll — so wide tables can be scrolled without having to
-  // first scroll down to reach the bottom scrollbar.
   const topScrollRef   = useRef(null);
   const tableScrollRef = useRef(null);
   const [tableWidth, setTableWidth] = useState(0);
-  const syncingRef = useRef(false); // guards against feedback loop between the two scroll handlers
+  const syncingRef = useRef(false);
 
   function handleTopScroll() {
     if (syncingRef.current) { syncingRef.current = false; return; }
@@ -51,8 +62,6 @@ export default function TransactionLogsTable() {
     topScrollRef.current.scrollLeft = tableScrollRef.current.scrollLeft;
   }
 
-  // Keep the dummy top-scrollbar's inner width matched to the real table's
-  // scrollWidth, so its thumb is proportionally sized correctly.
   useEffect(() => {
     function measure() {
       if (tableScrollRef.current) {
@@ -62,7 +71,7 @@ export default function TransactionLogsTable() {
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }); // no dep array — re-measures after every render (logs/columns can change width)
+  });
 
   const isRaw = productType === PRODUCT_TYPE.RAW;
 
@@ -79,7 +88,6 @@ export default function TransactionLogsTable() {
 
       if (fetchError) throw fetchError;
 
-      // Batch-resolve responsible emails from profiles
       const responsibleIds = [...new Set((data ?? []).map((r) => r.created_by).filter(Boolean))];
       let emailById = {};
       if (responsibleIds.length > 0) {
@@ -91,10 +99,10 @@ export default function TransactionLogsTable() {
         emailById = Object.fromEntries((profileRows ?? []).map((p) => [p.id, p.email]));
       }
 
-      // Running balance per product — IMPORTANT: only active rows (not
-      // removed) should count toward the running balance. A deleted or
-      // undone row never actually affected inventory, so including it here
-      // would make balance_before/balance_after wrong for every row after it.
+      // Running balance per product — only active rows (not removed) count.
+      // A deleted, undone, or finalize-reverted row never actually moved
+      // inventory going forward, so including it would corrupt
+      // balance_before/balance_after for every row after it.
       const runningBalance = {};
       const enriched = (data ?? []).map((row) => {
         const product   = row.product_name;
@@ -102,8 +110,6 @@ export default function TransactionLogsTable() {
         const before     = runningBalance[product] ?? 0;
 
         if (isRemoved) {
-          // Removed rows don't move the running balance — before === after,
-          // both equal to whatever the balance was at that point.
           return {
             ...row,
             balance_before:    before,
@@ -137,10 +143,6 @@ export default function TransactionLogsTable() {
     setSelectedDate("");
   }, [fetchLogs]);
 
-  // ── Realtime ─────────────────────────────────────────────────────────────
-  // Keeps the table in sync the instant a row is soft-removed (deleted via
-  // Order Table, or undone via Inventory) or finalized — re-fetches so the
-  // running balance recalculation and status badges stay correct.
   useEffect(() => {
     const table = isRaw ? "raw_materials_transaction_log" : "finished_products_transaction_log";
     const sub = supabase
@@ -161,8 +163,6 @@ export default function TransactionLogsTable() {
     };
   }
 
-  // ── Stock type helper ─────────────────────────────────────────────────────
-
   function getStockType(row) {
     if ((row.transaction_type ?? "stock_movement") === "count_correction") return "none";
     if ((row.incoming_bal ?? 0) > 0) return "incoming";
@@ -171,16 +171,25 @@ export default function TransactionLogsTable() {
   }
 
   // ── Status helper ─────────────────────────────────────────────────────────
-  // Priority: removed (deleted/undone) > finalized > pending.
-  // A row can't be both finalized and removed (undo/delete only ever touch
-  // rows that are still finalized_at IS NULL), so this ordering is safe.
-
+  // Priority: removed (deleted/finalize_reverted) > finalized > pending.
+  // 'deleted', 'undone_item', 'undone_session', and legacy 'undone' all
+  // surface as "deleted" — see the removed_reason note up top.
   function getStatus(row) {
     if (row.removed_at) {
-      return row.removed_reason === "deleted" ? "deleted" : "undone";
+      if (row.removed_reason === "finalize_reverted") return "reverted";
+      return "deleted";
     }
     if (row.finalized_at) return "finalized";
     return "pending";
+  }
+
+  function deletedReasonLabel(reason) {
+    switch (reason) {
+      case "undone_item":    return "Deleted (undo item)";
+      case "undone_session": return "Deleted (undo session)";
+      case "undone":          return "Deleted (undo)";
+      default:                return "Deleted";
+    }
   }
 
   const filteredLogs = logs.filter((r) => {
@@ -307,8 +316,6 @@ export default function TransactionLogsTable() {
           )}
         </div>
 
-        {/* Top scrollbar — mirrors the table's horizontal scroll so you
-            don't have to scroll down to the bottom edge to scroll sideways */}
         {!loading && filteredLogs.length > 0 && (
           <div
             ref={topScrollRef}
@@ -367,13 +374,19 @@ export default function TransactionLogsTable() {
                   const isManipulated  = (row.transaction_source ?? "ordered") === "manipulated";
                   const qty            = isIncoming ? row.incoming_bal : isOutgoing ? row.outgoing_bal : null;
                   const status         = getStatus(row);
-                  const isRemoved      = status === "deleted" || status === "undone";
+                  const isRemoved      = status === "deleted" || status === "reverted";
 
                   return (
                     <tr
                       key={row.id}
                       className={`hover:bg-gray-50 transition-colors ${
-                        isCorrection ? "bg-purple-50/30" : isRemoved ? "bg-gray-50/60" : ""
+                        isCorrection
+                          ? "bg-purple-50/30"
+                          : status === "deleted"
+                            ? "bg-red-50/40 border-l-4 border-red-300"
+                            : status === "reverted"
+                              ? "bg-orange-50/40 border-l-4 border-orange-300"
+                              : ""
                       }`}
                     >
 
@@ -410,7 +423,7 @@ export default function TransactionLogsTable() {
                       </td>
 
                       {/* Warehouse */}
-                      <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50" : ""}`}>
+                      <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                         {row.warehouse ?? <span className="text-gray-300">—</span>}
                       </td>
 
@@ -431,13 +444,12 @@ export default function TransactionLogsTable() {
 
                       {/* Balance before */}
                       <td className="px-4 py-3">
-                        <span className={`font-mono text-xs bg-gray-100 px-2 py-0.5 rounded-md text-gray-600 ${isRemoved ? "opacity-50" : ""}`}>
+                        <span className={`font-mono text-xs bg-gray-100 px-2 py-0.5 rounded-md text-gray-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                           {row.balance_before}
                         </span>
                       </td>
 
-                      {/* Balance after — removed rows never moved the balance,
-                          so before === after; shown plainly with a dash-like style */}
+                      {/* Balance after */}
                       <td className="px-4 py-3">
                         {isCorrection || isRemoved ? (
                           <span className="text-gray-300 text-xs">
@@ -465,7 +477,7 @@ export default function TransactionLogsTable() {
                       {/* Actual count */}
                       <td className="px-4 py-3">
                         {isManipulated && row.actual_bal != null ? (
-                          <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 ${isRemoved ? "opacity-50" : ""}`}>
+                          <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-purple-50 text-purple-700 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                             {row.actual_bal}
                           </span>
                         ) : (
@@ -477,11 +489,11 @@ export default function TransactionLogsTable() {
                       <td className="px-4 py-3">
                         {isManipulated && row.loss != null ? (
                           row.loss > 0 ? (
-                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-600 ${isRemoved ? "opacity-50" : ""}`}>
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                               -{row.loss}
                             </span>
                           ) : (
-                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-600 ${isRemoved ? "opacity-50" : ""}`}>
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                               0
                             </span>
                           )
@@ -491,14 +503,14 @@ export default function TransactionLogsTable() {
                       </td>
 
                       {isRaw && (
-                        <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50" : ""}`}>
+                        <td className={`px-4 py-3 text-gray-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                           {row.supplier_name ?? <span className="text-gray-300">—</span>}
                         </td>
                       )}
 
                       {/* Monitoring */}
                       <td className="px-4 py-3">
-                        <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50" : ""}`}>
+                        <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                           <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-100 text-xs font-bold text-blue-700">
                             {row.monitoring_employee?.[0]?.toUpperCase() ?? "?"}
                           </span>
@@ -509,7 +521,7 @@ export default function TransactionLogsTable() {
                       {/* Representative */}
                       <td className="px-4 py-3">
                         {row.representative_employee ? (
-                          <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50" : ""}`}>
+                          <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-amber-100 text-xs font-bold text-amber-700">
                               {row.representative_employee[0].toUpperCase()}
                             </span>
@@ -523,7 +535,7 @@ export default function TransactionLogsTable() {
                       {/* Staff */}
                       <td className="px-4 py-3">
                         {row.staff_employee ? (
-                          <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50" : ""}`}>
+                          <div className={`flex items-center gap-1.5 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                             <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-teal-100 text-xs font-bold text-teal-700">
                               {row.staff_employee[0].toUpperCase()}
                             </span>
@@ -537,7 +549,7 @@ export default function TransactionLogsTable() {
                       {/* Account responsible */}
                       <td className="px-4 py-3">
                         {row.responsible_email
-                          ? <span className={`text-xs text-gray-600 font-mono ${isRemoved ? "opacity-50" : ""}`}>{row.responsible_email}</span>
+                          ? <span className={`text-xs text-gray-600 font-mono ${isRemoved ? "opacity-50 line-through" : ""}`}>{row.responsible_email}</span>
                           : <span className="text-gray-300">—</span>}
                       </td>
 
@@ -549,7 +561,7 @@ export default function TransactionLogsTable() {
                         </div>
                       </td>
 
-                      {/* Status — now 4 states: pending / finalized / deleted / undone */}
+                      {/* Status — 4 states: pending / finalized / deleted / reverted */}
                       <td className="px-4 py-3">
                         {status === "finalized" && (
                           <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-700">
@@ -566,19 +578,23 @@ export default function TransactionLogsTable() {
                         {status === "deleted" && (
                           <span
                             className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-700"
-                            title={row.removed_at ? `Deleted ${formatDateTime(row.removed_at).date} ${formatDateTime(row.removed_at).time}` : undefined}
+                            title={
+                              row.removed_at
+                                ? `${deletedReasonLabel(row.removed_reason)} ${formatDateTime(row.removed_at).date} ${formatDateTime(row.removed_at).time}`
+                                : undefined
+                            }
                           >
                             <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
                             Deleted
                           </span>
                         )}
-                        {status === "undone" && (
+                        {status === "reverted" && (
                           <span
-                            className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-gray-100 text-gray-600 border border-gray-200"
-                            title={row.removed_at ? `Undone ${formatDateTime(row.removed_at).date} ${formatDateTime(row.removed_at).time}` : undefined}
+                            className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-md bg-orange-50 text-orange-700 border border-orange-200"
+                            title={row.removed_at ? `Finalize undone ${formatDateTime(row.removed_at).date} ${formatDateTime(row.removed_at).time} — reopened as a new pending order` : undefined}
                           >
-                            <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-                            ↩ Undone
+                            <span className="w-1.5 h-1.5 rounded-full bg-orange-500" />
+                            ↺ Reopened
                           </span>
                         )}
                       </td>

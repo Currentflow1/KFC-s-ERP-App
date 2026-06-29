@@ -19,7 +19,6 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
 
   useEffect(() => { loadAvailableDates(); }, [tab]);
 
-  // Close on outside click — matches Transaction Logs calendar behavior
   useEffect(() => {
     function handler(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
@@ -32,8 +31,42 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
     const table = tab === "finished"
       ? "finished_products_inventory_history"
       : "raw_materials_inventory_history";
-    const { data } = await supabase.from(table).select("inventory_date");
-    setAvailableDates(new Set((data || []).map((d) => d.inventory_date)));
+
+    // Fetch all pages so we never miss dates when there are many products.
+    // Each date appears once per inventory row, so we paginate until exhausted.
+    const PAGE = 1000;
+    let page = 0;
+    const allDates = new Set();
+
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select("inventory_date")
+        .order("inventory_date", { ascending: false })
+        .range(page * PAGE, (page + 1) * PAGE - 1);
+
+      if (error) {
+        console.error("[InventoryCalendar] loadAvailableDates error:", error.message);
+        break;
+      }
+
+      (data || []).forEach((r) => { if (r.inventory_date) allDates.add(r.inventory_date); });
+
+      // If fewer rows than a full page came back, we've reached the end
+      if (!data || data.length < PAGE) break;
+      page++;
+    }
+
+    setAvailableDates(allDates);
+
+    // If there are dates but no month is showing any dots, jump the calendar
+    // to the most recent month that has data so the user sees something immediately.
+    if (allDates.size > 0 && !date) {
+      const sorted = [...allDates].sort().reverse();
+      const latest = sorted[0];
+      const latestDate = new Date(latest + "T00:00:00");
+      setViewMonth(new Date(latestDate.getFullYear(), latestDate.getMonth(), 1));
+    }
   }
 
   function changeMonth(offset) {
@@ -53,6 +86,15 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
 
   const todayStr = toDateString(new Date());
   const cells = buildGrid();
+
+  // Check whether the current view month has any available dates,
+  // to show a hint when the user navigates to an empty month.
+  const currentMonthHasDates = useMemo(() => {
+    const year = viewMonth.getFullYear();
+    const month = String(viewMonth.getMonth() + 1).padStart(2, "0");
+    const prefix = `${year}-${month}`;
+    return [...availableDates].some((d) => d.startsWith(prefix));
+  }, [availableDates, viewMonth]);
 
   return (
     <div className="relative" ref={containerRef}>
@@ -119,6 +161,13 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
               );
             })}
           </div>
+
+          {/* No-data hint for current month */}
+          {!currentMonthHasDates && availableDates.size > 0 && (
+            <p className="text-xs text-center text-gray-400 mt-2">
+              No snapshots this month — try another month.
+            </p>
+          )}
 
           {/* Footer */}
           <div className="flex justify-between items-center mt-3 pt-2 border-t border-gray-100">

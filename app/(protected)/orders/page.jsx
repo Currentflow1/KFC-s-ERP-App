@@ -102,12 +102,6 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   );
 }
 
-// Multi-select checkbox dropdown for filtering the orders table by warehouse.
-// Includes multi-warehouse products naturally since filtering happens on the
-// row's own `warehouse` field (each order row belongs to exactly one warehouse,
-// but a product that exists in multiple warehouses can have separate order
-// rows per warehouse — selecting more than one warehouse shows rows from any
-// of the selected warehouses).
 function WarehouseMultiSelect({ options, selected, onChange }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef(null);
@@ -196,14 +190,19 @@ export default function OrderTable() {
   const [offline, setOffline]         = useState(false);
   const [isFinalized, setIsFinalized] = useState(false);
   const [checkingFinalization, setCheckingFinalization] = useState(false);
-  const [tableWarehouseFilter, setTableWarehouseFilter] = useState([]); // filters the orders TABLE (not the add form)
+  const [tableWarehouseFilter, setTableWarehouseFilter] = useState([]);
+
+  // Current user — stamped onto every inserted order as `created_by` so
+  // Transaction Logs can resolve "Account Responsible" for ordered rows too
+  // (previously only manipulated rows from ManipulatePanel carried this).
+  const [userId, setUserId] = useState(null);
 
   const [monitoringOptions, setMonitoringOptions]         = useState([]);
   const [representativeOptions, setRepresentativeOptions] = useState([]);
   const [staffOptions, setStaffOptions]                   = useState([]);
   const [supplierOptions, setSupplierOptions]             = useState([]);
 
-  // Products shaped as { name, warehouse } — built from junction table join.
+  // Products shaped as { name, warehouse } — only active (non-discontinued) products.
   // Each product can appear multiple times (once per warehouse).
   const [rawProducts, setRawProducts]           = useState([]);
   const [finishedProducts, setFinishedProducts] = useState([]);
@@ -216,7 +215,7 @@ export default function OrderTable() {
   const invTableName  = isRaw ? "raw_materials_inventory"          : "finished_products_inventory";
   const histTableName = isRaw ? "raw_materials_inventory_history"  : "finished_products_inventory_history";
 
-  // All unique warehouses for the active product type
+  // All unique warehouses for the active product type (from active products only)
   const warehouseOptions = useMemo(() => {
     const source = isRaw ? rawProducts : finishedProducts;
     return [...new Set(source.map((p) => p.warehouse).filter(Boolean))].sort();
@@ -250,6 +249,22 @@ export default function OrderTable() {
     };
   }, []);
 
+  // ── Load current user (for created_by stamping) ──────────────────────────
+
+  useEffect(() => {
+    async function loadUser() {
+      if (!isOnline()) return;
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        setUserId(user?.id ?? null);
+      } catch (e) {
+        console.error("[OrderTable] failed to load current user:", e.message);
+      }
+    }
+    loadUser();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ── Check if today is already finalized ───────────────────────────────────
 
   async function checkIfTodayFinalized() {
@@ -280,14 +295,15 @@ export default function OrderTable() {
     fetchRows();
     resetForm();
     checkIfTodayFinalized();
-    setTableWarehouseFilter([]); // reset table filter when switching product/stock type
+    setTableWarehouseFilter([]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType, stockType]);
 
   // ── Fetch dropdown options ────────────────────────────────────────────────
-  // Warehouse is now fetched from the junction tables and joined to the
-  // static table's name, producing { name, warehouse } pairs.
-  // A product with N warehouses appears N times — one entry per warehouse.
+  // Only active (non-discontinued) products are fetched via !inner join filtering.
+  // Warehouse is fetched from junction tables joined to the static table,
+  // producing { name, warehouse } pairs. Discontinued products are excluded
+  // at the database level using the !inner join + .eq() filter.
 
   async function fetchOptions() {
     if (!isOnline()) return;
@@ -296,14 +312,16 @@ export default function OrderTable() {
       supabase.from("representative_employee").select("name"),
       supabase.from("staff_employee").select("name"),
       supabase.from("suppliers").select("contact_person"),
-      // Join raw_materials_warehouses → raw_materials_static to get (name, warehouse)
+      // Join raw_materials_warehouses → raw_materials_static, excluding discontinued
       supabase
         .from("raw_materials_warehouses")
-        .select("warehouse, raw_materials_static(name)"),
-      // Join finished_products_warehouses → finished_products_static to get (name, warehouse)
+        .select("warehouse, raw_materials_static!inner(name, discontinued)")
+        .eq("raw_materials_static.discontinued", false),
+      // Join finished_products_warehouses → finished_products_static, excluding discontinued
       supabase
         .from("finished_products_warehouses")
-        .select("warehouse, finished_products_static(name)"),
+        .select("warehouse, finished_products_static!inner(name, discontinued)")
+        .eq("finished_products_static.discontinued", false),
     ]);
 
     setMonitoringOptions(mon.data?.map((r) => r.name) ?? []);
@@ -313,16 +331,16 @@ export default function OrderTable() {
       (sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A")
     );
 
-    // Flatten junction rows into { name, warehouse } pairs
+    // Flatten junction rows into { name, warehouse } pairs — only active products
     setRawProducts(
       (rawJunction.data ?? [])
-        .filter((r) => r.raw_materials_static?.name)
+        .filter((r) => r.raw_materials_static?.name && !r.raw_materials_static?.discontinued)
         .map((r) => ({ name: r.raw_materials_static.name, warehouse: r.warehouse }))
     );
 
     setFinishedProducts(
       (finJunction.data ?? [])
-        .filter((r) => r.finished_products_static?.name)
+        .filter((r) => r.finished_products_static?.name && !r.finished_products_static?.discontinued)
         .map((r) => ({ name: r.finished_products_static.name, warehouse: r.warehouse }))
     );
   }
@@ -434,6 +452,7 @@ export default function OrderTable() {
         outgoing_bal:             isIncoming ? 0 : qty,
         transaction_source:       "ordered",
         transaction_type:         "stock_movement",
+        created_by:               userId,
         ...(isRaw ? { supplier_name: isIncoming ? formData.supplier_name : null } : {}),
       };
       const { error: insertError } = await supabase.from(txTableName).insert([payload]);

@@ -19,11 +19,11 @@ export default function ProductsPage() {
       supabase
         .from("finished_products_static")
         .select("*, finished_products_warehouses(warehouse)")
-        .order("created_at", { ascending: false }),
+        .order("name", { ascending: true }),
       supabase
         .from("raw_materials_static")
         .select("*, raw_materials_warehouses(warehouse)")
-        .order("created_at", { ascending: false }),
+        .order("name", { ascending: true }),
     ]);
     setFinished(fin || []);
     setRaw(rawMat || []);
@@ -234,8 +234,13 @@ export default function ProductsPage() {
                   {search ? `No products matching "${search}"` : "No finished products yet"}
                 </td></tr>
               ) : filteredFinished.map((p) => (
-                <tr key={p.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{p.name}</td>
+                <tr
+                  key={p.id}
+                  className={`transition-colors ${p.discontinued ? "bg-gray-50 opacity-60" : "hover:bg-gray-50"}`}
+                >
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    <span className={p.discontinued ? "line-through text-gray-400" : ""}>{p.name}</span>
+                  </td>
                   <td className="px-4 py-3 text-gray-500">{p.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{renderWarehouses(p.finished_products_warehouses)}</td>
                   <td className="px-4 py-3">
@@ -285,8 +290,13 @@ export default function ProductsPage() {
                   {search ? `No materials matching "${search}"` : "No raw materials yet"}
                 </td></tr>
               ) : filteredRaw.map((m) => (
-                <tr key={m.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{m.name}</td>
+                <tr
+                  key={m.id}
+                  className={`transition-colors ${m.discontinued ? "bg-gray-50 opacity-60" : "hover:bg-gray-50"}`}
+                >
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    <span className={m.discontinued ? "line-through text-gray-400" : ""}>{m.name}</span>
+                  </td>
                   <td className="px-4 py-3 text-gray-500">{m.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{m.supplier_contact}</td>
                   <td className="px-4 py-3 text-gray-500">{renderWarehouses(m.raw_materials_warehouses)}</td>

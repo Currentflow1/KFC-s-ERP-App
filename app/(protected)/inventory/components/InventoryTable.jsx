@@ -1,116 +1,129 @@
 "use client";
 
-import { useState } from "react";
+// Two warehouses → consistent blue/green assignment, black text for readability.
+// Hash-based so the same warehouse name always gets the same color.
+function warehouseStyle(name) {
+  if (!name) return null;
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return hash % 2 === 0
+    ? "bg-blue-100 text-black border border-blue-200"
+    : "bg-green-100 text-black border border-green-200";
+}
 
-const LOW_STOCK_THRESHOLD = 100;
+export default function InventoryTable({ items, loading, onSelect, isFinalized, warehouseFilter }) {
+  if (loading) {
+    return (
+      <div className="px-4 py-8 text-sm text-gray-400 text-center animate-pulse">
+        Loading inventory…
+      </div>
+    );
+  }
 
-export default function InventoryTable({ items, loading, onSelect, warehouseFilter = [] }) {
-  const [search, setSearch] = useState("");
-
-  if (loading) return <div className="p-6 text-sm text-gray-400">Loading…</div>;
-
-  const filtered = items.filter((i) =>
-    i.name.toLowerCase().includes(search.trim().toLowerCase())
-  );
+  if (!items || items.length === 0) {
+    return (
+      <div className="px-4 py-10 text-sm text-gray-400 text-center">
+        {warehouseFilter && warehouseFilter.length > 0
+          ? "No items match the selected warehouse filter."
+          : "No inventory items found."}
+      </div>
+    );
+  }
 
   return (
     <div className="overflow-x-auto">
-
-      {/* Search */}
-      <div className="flex items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
-        <input
-          type="text"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search products…"
-          className="text-black w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        {search && (
-          <button
-            onClick={() => setSearch("")}
-            className=" text-sm text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            Clear
-          </button>
-        )}
-        <span className="ml-auto text-xs text-gray-400 shrink-0">
-          {filtered.length} {filtered.length === 1 ? "item" : "items"}
-        </span>
-      </div>
-
-      <table className="w-full text-sm min-w-[900px]">
+      <table className="w-full text-sm">
         <thead>
           <tr className="bg-gray-50 border-b border-gray-200">
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
             <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Beginning</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">In</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Out</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Current</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actual</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Loss</th>
-            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Action</th>
+            <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Beg</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Incoming</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Outgoing</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Current</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actual</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Loss</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
-          {filtered.length === 0 ? (
-            <tr>
-              <td colSpan="9" className="px-4 py-8 text-sm text-gray-400 text-center">
-                {search ? `No items matching "${search}"` : "No data found"}
-              </td>
-            </tr>
-          ) : (
-            filtered.map((i) => {
-              const lowStock = Number(i.current_bal) < LOW_STOCK_THRESHOLD;
-              const warehouse = i.warehouse ?? "—";
-              const isFiltered = warehouseFilter.length > 0 && warehouseFilter.includes(i.warehouse);
+          {items.map((item) => {
+            const isDiscontinued = item._discontinued;
+            const isLocked = isFinalized || isDiscontinued;
 
-              return (
-                <tr
-                  key={i.id}
-                  className={`hover:bg-gray-50 transition-colors ${lowStock ? "bg-red-50/60" : ""}`}
-                >
-                  <td className="px-4 py-3">
-                    {warehouse !== "—" ? (
-                      <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        isFiltered
-                          ? "bg-blue-600 text-white"
-                          : "bg-blue-100 text-blue-800"
-                      }`}>
-                        {warehouse}
+            return (
+              <tr
+                key={item.id}
+                onClick={() => onSelect(item)}
+                className={[
+                  "transition-all duration-200 relative",
+                  isDiscontinued
+                    ? "opacity-50 bg-gray-50 cursor-not-allowed"
+                    : isLocked
+                      ? "cursor-not-allowed hover:bg-gray-50"
+                      : "cursor-pointer hover:bg-blue-50 hover:shadow-[inset_3px_0_0_0_#3b82f6] hover:-translate-y-px",
+                ].join(" ")}
+                title={
+                  isDiscontinued
+                    ? "Discontinued — re-activate this product in the Products page to edit it"
+                    : isFinalized
+                      ? "Today is finalized — undo the finalize to make changes"
+                      : "Click to adjust this item"
+                }
+              >
+                {/* Name + discontinued badge */}
+                <td className="px-4 py-3 font-medium text-gray-900">
+                  <span className="flex items-center gap-2 flex-wrap">
+                    <span className={isDiscontinued ? "line-through text-gray-400" : ""}>
+                      {item.name}
+                    </span>
+                    {isDiscontinued && (
+                      <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 border border-red-100 px-1.5 py-0.5 rounded-full leading-none">
+                        <span className="w-1 h-1 rounded-full bg-red-500 inline-block" />
+                        Discontinued
                       </span>
-                    ) : (
-                      <span className="text-gray-400">—</span>
                     )}
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-900">
-                    {i.name}
-                    {lowStock && (
-                      <span className="ml-2 text-xs font-semibold text-red-600 bg-red-100 px-2 py-0.5 rounded-md">
-                        Low stock
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-700">{i.beg_bal}</td>
-                  <td className="px-4 py-3 text-green-600">{i.incoming_bal}</td>
-                  <td className="px-4 py-3 text-red-600">{i.outgoing_bal}</td>
-                  <td className={`px-4 py-3 ${lowStock ? "text-red-600 font-semibold" : "text-gray-700"}`}>
-                    {i.current_bal}
-                  </td>
-                  <td className="px-4 py-3 text-gray-700">{i.actual_bal}</td>
-                  <td className="px-4 py-3 text-orange-600">{i.loss}</td>
-                  <td className="px-4 py-3">
-                    <button
-                      onClick={() => onSelect(i)}
-                      className="px-3 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium transition-colors"
+                  </span>
+                </td>
+
+                {/* Warehouse */}
+                <td className="px-4 py-3">
+                  {item.warehouse ? (
+                    <span
+                      className={`text-xs font-semibold px-2 py-0.5 rounded-full ${warehouseStyle(item.warehouse)}`}
                     >
-                      Manipulate
-                    </button>
-                  </td>
-                </tr>
-              );
-            })
-          )}
+                      {item.warehouse}
+                    </span>
+                  ) : (
+                    <span className="text-gray-300">—</span>
+                  )}
+                </td>
+
+                {/* Numeric columns */}
+                <td className="px-4 py-3 text-right text-gray-500">{item.beg_bal}</td>
+                <td className="px-4 py-3 text-right font-semibold text-green-600">
+                  {item.incoming_bal > 0 ? `+${item.incoming_bal}` : item.incoming_bal}
+                </td>
+                <td className="px-4 py-3 text-right font-semibold text-red-500">
+                  {item.outgoing_bal > 0 ? `-${item.outgoing_bal}` : item.outgoing_bal}
+                </td>
+                <td className="px-4 py-3 text-right">
+                  <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${
+                    item.current_bal === 0
+                      ? "bg-red-100 text-red-700"
+                      : item.current_bal < 100
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-gray-100 text-gray-700"
+                  }`}>
+                    {item.current_bal}
+                  </span>
+                </td>
+                <td className="px-4 py-3 text-right text-gray-600">{item.actual_bal}</td>
+                <td className="px-4 py-3 text-right font-semibold text-red-500">
+                  {item.loss > 0 ? item.loss : <span className="text-gray-300 font-normal">—</span>}
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
