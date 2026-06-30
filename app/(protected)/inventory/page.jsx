@@ -274,10 +274,17 @@ export default function InventoryPage() {
         const tx = txTotals[liveId] ?? { incoming: 0, outgoing: 0 };
         const beg_bal = Number(row.beg_bal ?? 0);
         const actual_bal = Number(row.actual_bal ?? 0);
-        const loss = Number(row.loss ?? 0);
         const incoming_bal = Number(row.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
+        // Loss must reflect the *live* current_bal — which already folds in
+        // pending, not-yet-finalized orders via tx.incoming/tx.outgoing —
+        // not the loss value stored on the row. The stored value is only
+        // ever as fresh as the last actual count or finalize, so it goes
+        // stale the moment a new pending order shifts current_bal. Recompute
+        // it here instead of trusting row.loss, so "current - actual" always
+        // matches what's actually displayed, even while pending.
+        const loss = Math.max(0, current_bal - actual_bal);
 
         const productId = row[fk];
         const isDiscontinued = discontinuedIds.has(productId ?? liveId);
@@ -463,10 +470,12 @@ export default function InventoryPage() {
         const tx = txTotals[row.id] ?? { incoming: 0, outgoing: 0 };
         const beg_bal = Number(row.beg_bal ?? 0);
         const actual_bal = Number(row.actual_bal ?? 0);
-        const loss = Number(row.loss ?? 0);
         const incoming_bal = Number(row.incoming_bal ?? 0) + tx.incoming;
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
+        // Same live recompute as loadData — see comment there for why we
+        // don't just read row.loss.
+        const loss = Math.max(0, current_bal - actual_bal);
         const productId = row[fk];
         return {
           id: row.id,
@@ -578,14 +587,19 @@ export default function InventoryPage() {
           const incoming_bal = s.incoming_bal + pendingIn;
           const outgoing_bal = s.outgoing_bal + pendingOut;
           const current_bal = s.beg_bal + incoming_bal - outgoing_bal;
+          // Recompute live, same as loadData/prewarmOtherTab, instead of
+          // trusting s.loss (the snapshot's stored loss), which predates
+          // whatever pending tx is still layered back on top here.
+          const actual_bal = s.actual_bal;
+          const loss = Math.max(0, current_bal - actual_bal);
           return {
             ...item,
             beg_bal: s.beg_bal,
             incoming_bal,
             outgoing_bal,
             current_bal,
-            actual_bal: s.actual_bal,
-            loss: s.loss,
+            actual_bal,
+            loss,
             _pendingIncoming: pendingIn,
             _pendingOutgoing: pendingOut,
           };
