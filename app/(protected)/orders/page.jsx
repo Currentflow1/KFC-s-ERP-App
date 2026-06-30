@@ -59,9 +59,9 @@ function ConfirmModal({ message, onConfirm, onCancel }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-sm p-6">
-        <p className="text-sm text-gray-700 mb-6">{message}</p>
+        <p className="text-sm text-black mb-6">{message}</p>
         <div className="flex gap-2 justify-end">
-          <button onClick={onCancel} className="px-4 py-1.5 rounded-md border border-gray-200 text-gray-600 hover:bg-gray-50 text-sm font-medium transition-colors">Cancel</button>
+          <button onClick={onCancel} className="px-4 py-1.5 rounded-md border border-gray-200 text-black hover:bg-gray-50 text-sm font-medium transition-colors">Cancel</button>
           <button onClick={onConfirm} className="px-4 py-1.5 rounded-md bg-red-600 hover:bg-red-700 text-white text-sm font-medium transition-colors">Delete</button>
         </div>
       </div>
@@ -90,34 +90,34 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
 
   return (
     <div className="flex flex-col gap-1" ref={containerRef}>
-      {label && <label className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</label>}
+      {label && <label className="text-xs font-medium uppercase tracking-wide text-black">{label}</label>}
       <div className="relative">
         <button type="button" disabled={disabled}
           onClick={() => { if (!disabled) setOpen((p) => !p); setQuery(""); }}
           className={`w-full flex items-center justify-between rounded-md border px-3 py-1.5 text-sm text-left transition-colors ${
             disabled ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
-                     : "bg-white border-gray-200 text-gray-800 hover:border-blue-400 focus:outline-none"
+                     : "bg-white border-gray-200 text-black hover:border-blue-400 focus:outline-none"
           }`}>
-          <span className={value ? "text-gray-800" : "text-gray-400"}>
+          <span className={value ? "text-black" : "text-gray-500"}>
             {value || placeholder || `Select ${label}…`}
           </span>
           <span className="flex items-center gap-1 ml-2 shrink-0">
-            {value && !disabled && <span onClick={clear} className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer px-1">✕</span>}
-            <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+            {value && !disabled && <span onClick={clear} className="text-black hover:text-gray-600 text-xs cursor-pointer px-1">✕</span>}
+            <span className="text-black text-xs">{open ? "▲" : "▼"}</span>
           </span>
         </button>
         {open && (
           <div className="absolute z-50 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg">
             <div className="p-2 border-b border-gray-100">
               <input autoFocus type="text" value={query} onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search…" className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                placeholder="Search…" className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded-md text-black focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <ul className="max-h-48 overflow-y-auto">
               {filtered.length === 0
-                ? <li className="px-3 py-2 text-sm text-gray-400">No results</li>
+                ? <li className="px-3 py-2 text-sm text-black">No results</li>
                 : filtered.map((o) => (
                   <li key={o} onClick={() => select(o)}
-                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 hover:text-blue-700 transition-colors ${value === o ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-700"}`}>
+                    className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 hover:text-blue-700 transition-colors ${value === o ? "bg-blue-50 text-blue-700 font-medium" : "text-black"}`}>
                     {o}
                   </li>
                 ))}
@@ -160,17 +160,17 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
         className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
           selected.length > 0
             ? "bg-blue-50 text-blue-700 border-blue-300"
-            : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+            : "bg-white text-black border-gray-200 hover:bg-gray-50"
         } disabled:opacity-50 disabled:cursor-not-allowed`}
       >
         {label}
-        <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+        <span className="text-black text-xs">{open ? "▲" : "▼"}</span>
       </button>
 
       {open && options.length > 0 && (
         <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg p-2">
           <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b border-gray-100">
-            <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Warehouses</span>
+            <span className="text-xs font-medium uppercase tracking-wide text-black">Warehouses</span>
             {selected.length > 0 && (
               <button onClick={() => onChange([])} className="text-xs text-blue-600 hover:underline">Clear</button>
             )}
@@ -180,7 +180,7 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
               const checked = selected.includes(w);
               return (
                 <li key={w}>
-                  <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-700 hover:bg-gray-50 cursor-pointer">
+                  <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-black hover:bg-gray-50 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={checked}
@@ -591,7 +591,7 @@ export default function OrderTable() {
       )}
 
       <div className="mb-5">
-        <h1 className="text-xl font-semibold text-gray-900">Order Table</h1>
+        <h1 className="text-xl font-semibold text-black">Order Table</h1>
         <p className="text-sm text-gray-500 mt-0.5">Pending orders — applied to inventory permanently on Finalize Day.</p>
       </div>
 
@@ -619,26 +619,26 @@ export default function OrderTable() {
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button onClick={() => setProductType(PRODUCT_TYPE.RAW)}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${productType === PRODUCT_TYPE.RAW ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${productType === PRODUCT_TYPE.RAW ? "bg-gray-900 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Raw Materials
           </button>
           <button onClick={() => setProductType(PRODUCT_TYPE.FINISHED)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.FINISHED ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.FINISHED ? "bg-gray-900 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Finished Products
           </button>
           <button onClick={() => setProductType(PRODUCT_TYPE.PACKAGING)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.PACKAGING ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.PACKAGING ? "bg-gray-900 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Packaging
           </button>
         </div>
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button onClick={() => setStockType(STOCK_TYPE.INCOMING)}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${isIncoming ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             ↓ Incoming
           </button>
           <button onClick={() => setStockType(STOCK_TYPE.OUTGOING)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${!isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${!isIncoming ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             ↑ Outgoing
           </button>
         </div>
@@ -653,9 +653,9 @@ export default function OrderTable() {
 
       {/* Add form */}
       <div className={`bg-white border border-gray-200 rounded-lg shadow-sm p-4 mb-5 transition-opacity ${isFinalized ? "opacity-60" : ""}`}>
-        <h2 className="text-sm font-semibold text-gray-900 mb-4">
+        <h2 className="text-sm font-semibold text-black mb-4">
           {isIncoming ? "Add Incoming Order" : "Add Outgoing Order"}
-          <span className="ml-2 text-gray-400 font-normal">— {tabCfg.label}</span>
+          <span className="ml-2 text-black font-normal">— {tabCfg.label}</span>
         </h2>
 
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -693,11 +693,11 @@ export default function OrderTable() {
             onChange={(v) => setFormData((p) => ({ ...p, product_name: v }))}
           />
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            <label className="text-xs font-medium uppercase tracking-wide text-black">
               {isIncoming ? "Incoming Qty" : "Outgoing Qty"}
             </label>
             <input type="number" min="0" placeholder="0" disabled={offline || isFinalized}
-              className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
+              className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
               value={isIncoming ? formData.incoming_bal : formData.outgoing_bal}
               onChange={(e) => setFormData((p) => ({
                 ...p,
@@ -720,9 +720,9 @@ export default function OrderTable() {
         <div className="flex flex-wrap items-center gap-3 p-3 border-b border-gray-200 bg-gray-50">
           <input type="text" value={search} onChange={(e) => setSearch(e.target.value)}
             placeholder="Search products…"
-            className="w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            className="w-full max-w-xs border border-gray-200 rounded-md px-3 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500" />
           {search && (
-            <button onClick={() => setSearch("")} className="text-sm text-gray-400 hover:text-gray-600 transition-colors">Clear</button>
+            <button onClick={() => setSearch("")} className="text-sm text-black hover:text-gray-600 transition-colors">Clear</button>
           )}
 
           <WarehouseMultiSelect
@@ -732,7 +732,7 @@ export default function OrderTable() {
           />
 
           {!loading && (
-            <span className="ml-auto text-xs text-gray-400 shrink-0">
+            <span className="ml-auto text-xs text-black shrink-0">
               {filteredRows.length} {filteredRows.length === 1 ? "order" : "orders"}
             </span>
           )}
@@ -740,26 +740,26 @@ export default function OrderTable() {
 
         <div className="overflow-x-auto">
           {offline ? (
-            <div className="px-4 py-8 text-sm text-gray-400 text-center">Reconnect to view and manage orders.</div>
+            <div className="px-4 py-8 text-sm text-black text-center">Reconnect to view and manage orders.</div>
           ) : loading ? (
-            <div className="px-4 py-4 text-sm text-gray-400">Loading…</div>
+            <div className="px-4 py-4 text-sm text-black">Loading…</div>
           ) : filteredRows.length === 0 ? (
-            <div className="px-4 py-8 text-sm text-gray-400 text-center">
+            <div className="px-4 py-8 text-sm text-black text-center">
               {search ? `No orders matching "${search}"` : `No ${stockType} orders found.`}
             </div>
           ) : (
             <table className="w-full text-sm min-w-[900px]">
               <thead>
                 <tr className="bg-gray-50 border-b border-gray-200">
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouse</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
-                  {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>}
-                  {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Staff</th>}
-                  {showSupplier && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Product</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">{isIncoming ? "Incoming Qty" : "Outgoing Qty"}</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Date</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Warehouse</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Monitoring</th>
+                  {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Representative</th>}
+                  {!isIncoming && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Staff</th>}
+                  {showSupplier && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Supplier</th>}
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Product</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">{isIncoming ? "Incoming Qty" : "Outgoing Qty"}</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Date</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-black">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -767,34 +767,34 @@ export default function OrderTable() {
                   const isEditing = editingId === row.id;
                   return (
                     <tr key={row.id} className="hover:bg-gray-50 transition-colors">
-                      <td className="px-4 py-3 text-gray-500">{row.warehouse ?? "—"}</td>
+                      <td className="px-4 py-3 text-black">{row.warehouse ?? "—"}</td>
                       <td className="px-4 py-3 min-w-[160px]">
                         {isEditing
                           ? <SearchableSelect value={editData.monitoring_employee} options={monitoringOptions} onChange={(v) => handleEditChange("monitoring_employee", v)} />
-                          : <span className="text-gray-700">{row.monitoring_employee}</span>}
+                          : <span className="text-black">{row.monitoring_employee}</span>}
                       </td>
                       {!isIncoming && (
                         <td className="px-4 py-3 min-w-[160px]">
                           {isEditing
                             ? <SearchableSelect value={editData.representative_employee ?? ""} options={representativeOptions} onChange={(v) => handleEditChange("representative_employee", v)} />
-                            : <span className="text-gray-700">{row.representative_employee}</span>}
+                            : <span className="text-black">{row.representative_employee}</span>}
                         </td>
                       )}
                       {!isIncoming && (
                         <td className="px-4 py-3 min-w-[160px]">
                           {isEditing
                             ? <SearchableSelect value={editData.staff_employee ?? ""} options={staffOptions} onChange={(v) => handleEditChange("staff_employee", v)} />
-                            : <span className="text-gray-700">{row.staff_employee}</span>}
+                            : <span className="text-black">{row.staff_employee}</span>}
                         </td>
                       )}
                       {showSupplier && (
                         <td className="px-4 py-3 min-w-[160px]">
                           {isEditing
                             ? <SearchableSelect value={editData.supplier_name ?? ""} options={supplierOptions} onChange={(v) => handleEditChange("supplier_name", v)} />
-                            : <span className="text-gray-700">{row.supplier_name}</span>}
+                            : <span className="text-black">{row.supplier_name}</span>}
                         </td>
                       )}
-                      <td className="px-4 py-3 font-medium text-gray-900 min-w-[200px]">
+                      <td className="px-4 py-3 font-medium text-black min-w-[200px]">
                         {isEditing ? (
                           <div className="flex flex-col gap-1.5">
                             <SearchableSelect
@@ -814,14 +814,14 @@ export default function OrderTable() {
                       <td className="px-4 py-3">
                         {isEditing ? (
                           <input type="number" min="0"
-                            className="w-full rounded-md border border-gray-200 px-2 py-1 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            className="w-full rounded-md border border-gray-200 px-2 py-1 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
                             value={isIncoming ? editData.incoming_bal : editData.outgoing_bal}
                             onChange={(e) => handleEditChange(isIncoming ? "incoming_bal" : "outgoing_bal", e.target.value)} />
                         ) : (
-                          <span className="text-gray-900">{isIncoming ? row.incoming_bal : row.outgoing_bal}</span>
+                          <span className="text-black">{isIncoming ? row.incoming_bal : row.outgoing_bal}</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">
+                      <td className="px-4 py-3 text-xs text-black whitespace-nowrap">
                         {new Date(row.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
                       </td>
                       <td className="px-4 py-3">
@@ -830,7 +830,7 @@ export default function OrderTable() {
                             <button onClick={() => handleEditSave(row.id)} disabled={saving || offline || isFinalized}
                               className="px-3 py-1.5 text-xs font-medium bg-green-600 hover:bg-green-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Save</button>
                             <button onClick={() => setEditingId(null)}
-                              className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md transition-colors">Cancel</button>
+                              className="px-3 py-1.5 text-xs font-medium bg-gray-100 hover:bg-gray-200 text-black rounded-md transition-colors">Cancel</button>
                           </div>
                         ) : (
                           <div className="inline-flex items-center gap-1">

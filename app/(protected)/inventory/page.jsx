@@ -15,6 +15,7 @@ import {
   sanitizeInventoryRow,
   warmPermissionCache,
   evictStaleQueueEntries,
+  attachTxIdToItemChange,
 } from "@/lib/sync";
 import InventoryHeader from "./components/InventoryHeader";
 import InventoryTable from "./components/InventoryTable";
@@ -102,17 +103,17 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
         className={`flex items-center gap-2 px-3 py-1.5 rounded-md border text-sm font-medium transition-colors ${
           selected.length > 0
             ? "bg-blue-50 text-blue-700 border-blue-300"
-            : "bg-white text-gray-600 border-gray-200 hover:bg-gray-50"
+            : "bg-white text-black border-gray-300 hover:bg-gray-50"
         } disabled:opacity-50 disabled:cursor-not-allowed`}
       >
         {label}
-        <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+        <span className="text-black text-xs">{open ? "▲" : "▼"}</span>
       </button>
 
       {open && options.length > 0 && (
         <div className="absolute z-50 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg p-2">
           <div className="flex items-center justify-between px-1 pb-2 mb-1 border-b border-gray-100">
-            <span className="text-xs font-medium uppercase tracking-wide text-gray-400">Warehouses</span>
+            <span className="text-xs font-semibold uppercase tracking-wide text-black">Warehouses</span>
             {selected.length > 0 && (
               <button onClick={() => onChange([])} className="text-xs text-blue-600 hover:underline">
                 Clear
@@ -124,7 +125,7 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
               const checked = selected.includes(w);
               return (
                 <li key={w}>
-                  <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-gray-700 hover:bg-gray-50 cursor-pointer">
+                  <label className="flex items-center gap-2 px-2 py-1.5 rounded-md text-sm text-black hover:bg-gray-50 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={checked}
@@ -358,11 +359,15 @@ export default function InventoryPage() {
     });
   }
 
-  // ─── deletePendingTxSince ─────────────────────────────────────────────────
-  // FIX: Removed `.is("finalized_at", null)` filter — manipulated rows from
-  // ManipulatePanel are inserted with finalized_at already set, so the old
-  // filter caused them to be silently skipped during undo, leaving them as
-  // active transactions instead of being marked deleted/undone.
+  // ── deletePendingTxSince ─────────────────────────────────────────────────
+  // Time-range based undo path. Kept as a fallback for session/close_day
+  // undo and for older item-change entries that predate exact tx-id
+  // tracking. Note this is vulnerable to client/server clock skew (a
+  // client-generated `since` can land after the server-assigned
+  // `created_at` of a row just inserted), which can cause a 0-row UPDATE
+  // that silently leaves the tx row looking "Finalized" instead of
+  // "Deleted". Where possible (single item undo), prefer exact tx ids —
+  // see attachTxIdToItemChange / entry.txIds in undoItemChange.
   async function deletePendingTxSince(t, since, inventoryId, reason = "deleted") {
     let query = supabase
       .from(txTable(t))
@@ -370,8 +375,17 @@ export default function InventoryPage() {
       .is("removed_at", null)
       .gte("created_at", since);
     if (inventoryId) query = query.eq("inventory_id", inventoryId);
-    const { error } = await query;
+
+    const { data, error } = await query.select("id"); // .select() to see affected rows
     if (error) throw error;
+
+    if (!data || data.length === 0) {
+      console.warn(
+        `[deletePendingTxSince] No rows matched for table=${txTable(t)}, since=${since}, inventoryId=${inventoryId ?? "ALL"}. ` +
+        `This usually means an RLS policy on ${txTable(t)} is blocking the UPDATE, or the timestamp filter excluded the row.`
+      );
+    }
+    return data;
   }
 
   async function restoreSnapshot(undoType, whichTab) {
@@ -579,15 +593,35 @@ export default function InventoryPage() {
         await saveInventorySnapshot(snapKey, merged);
         setItems(merged);
 
-        // FIX: deletePendingTxSince no longer filters by finalized_at,
-        // so manipulated rows (pre-finalized by ManipulatePanel) are now
-        // correctly caught and marked as undone_item.
-        if (isOnline() && entry.since) {
-          for (const itemId of revertedIds) {
+        if (isOnline()) {
+          // Prefer deleting by the exact tx id(s) recorded at insert time —
+          // immune to clock skew, unlike the created_at >= since scan below.
+          if (Array.isArray(entry.txIds) && entry.txIds.length > 0) {
             try {
-              await deletePendingTxSince(t, entry.since, itemId, "undone_item");
+              const { data, error } = await supabase
+                .from(txTable(t))
+                .update({ removed_at: new Date().toISOString(), removed_reason: "undone_item" })
+                .in("id", entry.txIds)
+                .is("removed_at", null)
+                .select("id");
+              if (error) throw error;
+              if (!data || data.length === 0) {
+                console.warn(
+                  `[undoItemChange] exact-id delete matched 0 rows for tab=${t}, txIds=`,
+                  entry.txIds
+                );
+              }
             } catch (e) {
-              console.error("[undoItemChange] failed to delete tx row for", itemId, e.message);
+              console.error("[undoItemChange] failed to delete tx rows by id:", e.message);
+            }
+          } else if (entry.since) {
+            // Fallback for older entries created before tx ids were tracked.
+            for (const itemId of revertedIds) {
+              try {
+                await deletePendingTxSince(t, entry.since, itemId, "undone_item");
+              } catch (e) {
+                console.error("[undoItemChange] failed to delete tx row for", itemId, e.message);
+              }
             }
           }
         }
@@ -617,6 +651,12 @@ export default function InventoryPage() {
       return;
     }
 
+    // ── Fallback: no local entry (e.g. cleared by evictStaleQueueEntries
+    // on boot, or undo triggered from a different device/tab) — restore
+    // from the server-side undo_log instead. Without this branch the
+    // "↩ Item" button gets stuck on "…" forever whenever the local
+    // IndexedDB history is empty, since setUndoing("item") above would
+    // never be cleared.
     if (!isOnline()) {
       alert("No undo snapshot found.");
       setUndoing(null);
@@ -692,8 +732,8 @@ export default function InventoryPage() {
     const since = result.snapshot?.since;
     if (since) {
       try {
-        // FIX: deletePendingTxSince no longer filters by finalized_at,
-        // so manipulated rows are now correctly caught and marked as undone_session.
+        // deletePendingTxSince no longer filters by finalized_at, so
+        // manipulated rows are correctly caught and marked as undone_session.
         await deletePendingTxSince(t, since, undefined, "undone_session");
       } catch (e) {
         alert(
@@ -938,6 +978,14 @@ export default function InventoryPage() {
       const since = await saveSnapshot("item_change", t);
       const insertedTxId = await updateFn();
 
+      // Tie the exact tx row id to the local undo entry. This is what undo
+      // uses to delete precisely the right row, instead of guessing via a
+      // created_at >= since time window (which clock skew can break).
+      if (insertedTxId) {
+        const localEntry = await peekItemChange(t);
+        if (localEntry) await attachTxIdToItemChange(t, localEntry.id, insertedTxId);
+      }
+
       if (isOnline()) {
         const { data: lg } = await supabase
           .from("undo_log")
@@ -1053,7 +1101,7 @@ export default function InventoryPage() {
               className={`px-4 py-1.5 text-sm font-medium transition-colors ${idx > 0 ? "border-l border-gray-200" : ""} ${
                 tab === t
                   ? "bg-blue-600 text-white"
-                  : "bg-white text-gray-600 hover:bg-gray-50"
+                  : "bg-white text-black hover:bg-gray-50"
               }`}
             >
               {cfg(t).label}
@@ -1075,12 +1123,12 @@ export default function InventoryPage() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search products…"
-            className="border border-gray-200 rounded-md pl-3 pr-7 py-1.5 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-blue-500 w-44 sm:w-56"
+            className="border border-gray-300 rounded-md pl-3 pr-7 py-1.5 text-sm text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 w-44 sm:w-56"
           />
           {search && (
             <button
               onClick={() => setSearch("")}
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-xs"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-black hover:text-gray-600 text-xs"
             >
               ✕
             </button>
@@ -1108,7 +1156,7 @@ export default function InventoryPage() {
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
 
         <div className="flex items-center gap-1">
-          <span className="text-xs text-gray-400 mr-1 font-medium uppercase tracking-wide">
+          <span className="text-xs text-black mr-1 font-semibold uppercase tracking-wide">
             Undo
           </span>
 
@@ -1116,7 +1164,7 @@ export default function InventoryPage() {
             onClick={undoItemChange}
             disabled={!canUndoItem || undoing === "item"}
             title="Undo last item change and remove its pending transaction"
-            className="px-3 py-1.5 rounded-md text-sm text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 rounded-md text-sm text-black bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {undoing === "item" ? "…" : "↩ Item"}
           </button>
@@ -1125,7 +1173,7 @@ export default function InventoryPage() {
             onClick={undoSession}
             disabled={!canUndoSession || undoing === "session"}
             title="Undo all changes this session and remove this session's pending transactions"
-            className="px-3 py-1.5 rounded-md text-sm text-gray-600 bg-white border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 rounded-md text-sm text-black bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {undoing === "session" ? "…" : "↩ Session"}
           </button>

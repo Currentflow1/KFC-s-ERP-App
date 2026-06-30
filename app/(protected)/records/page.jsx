@@ -380,26 +380,26 @@ function openDotMatrixPrint(opts) {
 function StatCard({ label, value, colorClass, sub }) {
   return (
     <div className="bg-white border border-gray-200 rounded-lg px-5 py-4 shadow-sm">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-400 mb-1">{label}</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">{label}</p>
       <p className={`text-2xl font-bold ${colorClass}`}>{fmt(value)}</p>
-      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
+      {sub && <p className="text-xs text-gray-500 mt-0.5">{sub}</p>}
     </div>
   );
 }
 
 function EmptyState({ message }) {
-  return <div className="py-10 text-center text-sm text-gray-400">{message}</div>;
+  return <div className="py-10 text-center text-sm text-gray-500">{message}</div>;
 }
 
 function Badge({ children, color = "gray" }) {
   const colors = {
-    gray:   "bg-gray-100 text-gray-600",
+    gray:   "bg-gray-100 text-gray-700",
     green:  "bg-green-50 text-green-700",
     red:    "bg-red-50 text-red-600",
     blue:   "bg-blue-50 text-blue-700",
     amber:  "bg-amber-50 text-amber-700",
     purple: "bg-purple-50 text-purple-700",
-    slate:  "bg-slate-100 text-slate-600 border border-slate-200",
+    slate:  "bg-slate-100 text-slate-700 border border-slate-200",
     orange: "bg-orange-50 text-orange-700 border border-orange-200",
   };
   return (
@@ -415,7 +415,7 @@ function IconButton({ onClick, title, children, disabled = false }) {
       onClick={onClick}
       title={title}
       disabled={disabled}
-      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-medium transition-colors bg-white border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+      className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-xs font-medium transition-colors bg-white border-gray-200 text-black hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
     >
       {children}
     </button>
@@ -426,10 +426,10 @@ function SectionHeader({ title, count, countLabel, open, onToggle, actions }) {
   return (
     <div className="px-4 py-3 border-b border-gray-100 flex items-center justify-between">
       <button onClick={onToggle} className="flex items-center gap-2 text-left group">
-        <span className={`text-gray-400 text-xs transition-transform duration-200 ${open ? "rotate-90" : ""}`}>▶</span>
-        <span className="text-sm font-semibold text-gray-700 group-hover:text-gray-900 transition-colors">{title}</span>
+        <span className={`text-black text-xs transition-transform duration-200 ${open ? "rotate-90" : ""}`}>▶</span>
+        <span className="text-sm font-semibold text-black group-hover:text-gray-900 transition-colors">{title}</span>
         {count > 0 && (
-          <span className="text-xs text-gray-400">
+          <span className="text-xs text-gray-500">
             {count.toLocaleString()} {countLabel}{count === 1 ? "" : "s"}
           </span>
         )}
@@ -684,7 +684,7 @@ export default function RecordsPage() {
       <div className="mb-5 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-xl font-bold text-gray-900">Records</h1>
-          <p className="text-sm text-gray-400 mt-0.5">
+          <p className="text-sm text-gray-500 mt-0.5">
             Finalized history, transaction log, and inventory summaries
           </p>
         </div>
@@ -697,14 +697,14 @@ export default function RecordsPage() {
             )}
             disabled={histRows.length === 0 && txRows.length === 0}
             title="Download all records as CSV"
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-gray-200 bg-white text-gray-600 text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-gray-200 bg-white text-black text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             ⬇ CSV All
           </button>
           <button
             onClick={() => openDotMatrixPrint(printOpts())}
             title="Print full report (dot matrix)"
-            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-gray-200 bg-white text-gray-600 text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-gray-200 bg-white text-black text-sm font-medium hover:bg-gray-50 transition-colors"
           >
             🖨️ Print All
           </button>
@@ -715,15 +715,15 @@ export default function RecordsPage() {
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button onClick={() => setTab("finished")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${tab === "finished" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${tab === "finished" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Finished
           </button>
           <button onClick={() => setTab("raw")}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Raw
           </button>
           <button onClick={() => setTab("packaging")}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "packaging" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "packaging" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Packaging
           </button>
         </div>
@@ -731,21 +731,21 @@ export default function RecordsPage() {
         <div className="w-px h-6 bg-gray-200 mx-0.5" />
 
         <div className="flex items-center gap-2 flex-wrap">
-          <label className="text-xs text-gray-400 font-medium">From</label>
+          <label className="text-xs text-black font-semibold">From</label>
           <input type="date" value={dateFrom} max={dateTo || todayLocal()}
             onChange={(e) => setDateFrom(e.target.value)}
-            className="border border-gray-200 rounded-md px-2 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <label className="text-xs text-gray-400 font-medium">To</label>
+            className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <label className="text-xs text-black font-semibold">To</label>
           <input type="date" value={dateTo} min={dateFrom || undefined} max={todayLocal()}
             onChange={(e) => setDateTo(e.target.value)}
-            className="border border-gray-200 rounded-md px-2 py-1.5 text-sm text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500" />
           <button onClick={applyDateFilter}
             className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors">
             Apply
           </button>
           {(dateFrom || dateTo) && (
             <button onClick={clearDateFilter}
-              className="px-3 py-1.5 rounded-md bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 text-sm transition-colors">
+              className="px-3 py-1.5 rounded-md bg-white border border-gray-200 text-black hover:bg-gray-50 text-sm transition-colors">
               Clear
             </button>
           )}
@@ -757,9 +757,9 @@ export default function RecordsPage() {
         <div className="mb-5">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <h2 className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Summary</h2>
+              <h2 className="text-sm font-semibold text-black uppercase tracking-wide">Summary</h2>
               {active && (
-                <p className="text-xs text-gray-400 mt-0.5">
+                <p className="text-xs text-gray-500 mt-0.5">
                   {period === "weekly" ? "Last 7 days" : "Last 30 days"}
                   {active.days > 0
                     ? ` — ${active.days} closed day${active.days === 1 ? "" : "s"}`
@@ -769,11 +769,11 @@ export default function RecordsPage() {
             </div>
             <div className="flex rounded-md border border-gray-200 overflow-hidden">
               <button onClick={() => setPeriod("weekly")}
-                className={`px-3 py-1 text-xs font-medium transition-colors ${period === "weekly" ? "bg-blue-600 text-white" : "bg-white text-gray-500 hover:bg-gray-50"}`}>
+                className={`px-3 py-1 text-xs font-medium transition-colors ${period === "weekly" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
                 Weekly
               </button>
               <button onClick={() => setPeriod("monthly")}
-                className={`px-3 py-1 text-xs font-medium border-l border-gray-200 transition-colors ${period === "monthly" ? "bg-blue-600 text-white" : "bg-white text-gray-500 hover:bg-gray-50"}`}>
+                className={`px-3 py-1 text-xs font-medium border-l border-gray-200 transition-colors ${period === "monthly" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
                 Monthly
               </button>
             </div>
@@ -786,7 +786,7 @@ export default function RecordsPage() {
             </div>
           ) : (
             <div className="bg-white border border-gray-200 rounded-lg px-5 py-4 shadow-sm">
-              <p className="text-sm text-gray-400">No finalized days in this period yet.</p>
+              <p className="text-sm text-gray-500">No finalized days in this period yet.</p>
             </div>
           )}
         </div>
@@ -823,7 +823,7 @@ export default function RecordsPage() {
 
           {histOpen && (
             histLoad ? (
-              <div className="py-10 text-center text-sm text-gray-400 animate-pulse">Loading…</div>
+              <div className="py-10 text-center text-sm text-gray-500 animate-pulse">Loading…</div>
             ) : enrichedHistRows.length === 0 ? (
               <EmptyState message="No finalized history found. Finalize a day in Inventory to see records here." />
             ) : (
@@ -833,34 +833,34 @@ export default function RecordsPage() {
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50">
                         {["Date", "Product", "Beg", "Incoming", "Outgoing", "Current", "Actual", "Loss", "Warehouse", "Recorded At"].map((h) => (
-                          <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                          <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-gray-50">
                       {histSlice.map((row) => (
                         <tr key={row.id} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-4 py-2.5 text-gray-500 whitespace-nowrap">{row.inventory_date}</td>
-                          <td className="px-4 py-2.5 font-medium text-gray-800">{row.name}</td>
-                          <td className="px-4 py-2.5 text-gray-600">{fmt(row.beg_bal)}</td>
+                          <td className="px-4 py-2.5 text-black whitespace-nowrap">{row.inventory_date}</td>
+                          <td className="px-4 py-2.5 font-medium text-black">{row.name}</td>
+                          <td className="px-4 py-2.5 text-black">{fmt(row.beg_bal)}</td>
                           <td className="px-4 py-2.5 text-green-600 font-medium">{fmt(row.incoming_bal)}</td>
                           <td className="px-4 py-2.5 text-red-500 font-medium">{fmt(row.outgoing_bal)}</td>
-                          <td className="px-4 py-2.5 text-gray-800 font-semibold">{fmt(row.current_bal)}</td>
-                          <td className="px-4 py-2.5 text-gray-600">{fmt(row.actual_bal)}</td>
+                          <td className="px-4 py-2.5 text-black font-semibold">{fmt(row.current_bal)}</td>
+                          <td className="px-4 py-2.5 text-black">{fmt(row.actual_bal)}</td>
                           <td className="px-4 py-2.5">
                             {Number(row.loss) > 0
                               ? <span className="text-orange-500 font-medium">{fmt(row.loss)}</span>
                               : <span className="text-gray-300">—</span>}
                           </td>
-                          <td className="px-4 py-2.5 text-gray-400 whitespace-nowrap">{row._warehouse}</td>
-                          <td className="px-4 py-2.5 text-gray-400 whitespace-nowrap text-xs">{fmtDateTime(row.created_at)}</td>
+                          <td className="px-4 py-2.5 text-black whitespace-nowrap">{row._warehouse}</td>
+                          <td className="px-4 py-2.5 text-black whitespace-nowrap text-xs">{fmtDateTime(row.created_at)}</td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
                 {histPages > 1 && (
-                  <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
+                  <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-black">
                     <span>Page {histPage} of {histPages}</span>
                     <div className="flex gap-1">
                       <button onClick={() => setHistPage((p) => Math.max(1, p - 1))} disabled={histPage === 1}
@@ -907,7 +907,7 @@ export default function RecordsPage() {
 
           {txOpen && (
             txLoad ? (
-              <div className="py-10 text-center text-sm text-gray-400 animate-pulse">Loading…</div>
+              <div className="py-10 text-center text-sm text-gray-500 animate-pulse">Loading…</div>
             ) : enrichedTxRows.length === 0 ? (
               <EmptyState message="No transactions found for this period." />
             ) : (
@@ -917,7 +917,7 @@ export default function RecordsPage() {
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50">
                         {txHeaders.map((h) => (
-                          <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-400 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                          <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
                     </thead>
@@ -938,13 +938,13 @@ export default function RecordsPage() {
 
                         return (
                           <tr key={row.id} className={`hover:bg-gray-50 transition-colors ${rowBg}`}>
-                            <td className={`px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs ${dimClass}`}>
+                            <td className={`px-4 py-2.5 text-black whitespace-nowrap text-xs ${dimClass}`}>
                               {fmtDateTime(row.created_at)}
                             </td>
-                            <td className={`px-4 py-2.5 text-gray-500 whitespace-nowrap text-xs ${dimClass}`}>
+                            <td className={`px-4 py-2.5 text-black whitespace-nowrap text-xs ${dimClass}`}>
                               {fmtDateTime(row.finalized_at)}
                             </td>
-                            <td className={`px-4 py-2.5 font-medium text-gray-800 ${dimClass}`}>
+                            <td className={`px-4 py-2.5 font-medium text-black ${dimClass}`}>
                               {row.product_name}
                             </td>
 
@@ -977,7 +977,7 @@ export default function RecordsPage() {
                             <td className={`px-4 py-2.5 text-red-500 font-medium ${dimClass}`}>
                               {Number(row.outgoing_bal) > 0 ? fmt(row.outgoing_bal) : <span className="text-gray-300">—</span>}
                             </td>
-                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>
+                            <td className={`px-4 py-2.5 text-black ${dimClass}`}>
                               {row.actual_bal != null ? fmt(row.actual_bal) : <span className="text-gray-300">—</span>}
                             </td>
                             <td className="px-4 py-2.5">
@@ -985,13 +985,13 @@ export default function RecordsPage() {
                                 ? <span className={`text-orange-500 font-medium ${dimClass}`}>{fmt(row.loss)}</span>
                                 : <span className="text-gray-300">—</span>}
                             </td>
-                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>
-                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.representative_employee ?? "—"}</td>
-                            <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.staff_employee ?? "—"}</td>
+                            <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>
+                            <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.representative_employee ?? "—"}</td>
+                            <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.staff_employee ?? "—"}</td>
                             {hasSupplierCol(tab) && (
-                              <td className={`px-4 py-2.5 text-gray-600 ${dimClass}`}>{row.supplier_name ?? "—"}</td>
+                              <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.supplier_name ?? "—"}</td>
                             )}
-                            <td className={`px-4 py-2.5 text-gray-400 whitespace-nowrap ${dimClass}`}>{row._warehouse}</td>
+                            <td className={`px-4 py-2.5 text-black whitespace-nowrap ${dimClass}`}>{row._warehouse}</td>
                           </tr>
                         );
                       })}
@@ -999,7 +999,7 @@ export default function RecordsPage() {
                   </table>
                 </div>
                 {txPages > 1 && (
-                  <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-gray-400">
+                  <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-black">
                     <span>Page {txPage} of {txPages}</span>
                     <div className="flex gap-1">
                       <button onClick={() => setTxPage((p) => Math.max(1, p - 1))} disabled={txPage === 1}

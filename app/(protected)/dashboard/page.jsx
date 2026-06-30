@@ -16,6 +16,37 @@ import {
 
 const LOW_STOCK_THRESHOLD = 100;
 
+// ─── Tab config ───────────────────────────────────────────────────────────
+// Single source of truth for which tables/labels each tab uses, mirroring
+// the pattern in InventoryPage / TransactionLogsTable so all three tabs
+// (finished, raw, packaging) stay in sync going forward.
+const TAB_CONFIG = {
+  finished: {
+    label: "Finished Products",
+    static: "finished_products_static",
+    inv: "finished_products_inventory",
+    hist: "finished_products_inventory_history",
+    wh: "finished_products_warehouses",
+  },
+  raw: {
+    label: "Raw Materials",
+    static: "raw_materials_static",
+    inv: "raw_materials_inventory",
+    hist: "raw_materials_inventory_history",
+    wh: "raw_materials_warehouses",
+  },
+  packaging: {
+    label: "Packaging",
+    static: "packaging_static",
+    inv: "packaging_inventory",
+    hist: "packaging_inventory_history",
+    wh: "packaging_warehouses",
+  },
+};
+const TAB_ORDER = ["finished", "raw", "packaging"];
+
+function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
+
 // ── Warehouse dropdown (multi-select with checkboxes) ────────────────────────
 function WarehouseMultiSelect({ options, selected, onChange }) {
   const [open, setOpen] = useState(false);
@@ -97,7 +128,7 @@ export default function InventoryPage() {
   const [printedAt, setPrintedAt]         = useState(null);
   const [chartCollapsed, setChartCollapsed] = useState(false);
 
-  // ✅ Warehouse filter and available warehouses
+  // Warehouse filter and available warehouses
   const [warehouseFilter, setWarehouseFilter] = useState([]);
   const [availableWarehouses, setAvailableWarehouses] = useState([]);
 
@@ -115,9 +146,7 @@ export default function InventoryPage() {
 
   // ── Load available warehouses from warehouse junction tables ────────────────
   async function loadAvailableWarehouses() {
-    const table = tab === "finished"
-      ? "finished_products_warehouses"
-      : "raw_materials_warehouses";
+    const table = cfg(tab).wh;
 
     try {
       const { data, error } = await supabase
@@ -143,22 +172,13 @@ export default function InventoryPage() {
     setLoading(true);
 
     const isHistory = date !== "";
-
-    const staticTable = tab === "finished"
-      ? "finished_products_static"
-      : "raw_materials_static";
+    const tabCfg = cfg(tab);
 
     const { data: staticItems } = await supabase
-      .from(staticTable)
+      .from(tabCfg.static)
       .select("id, name, category_name");
 
-    const inventoryTable = isHistory
-      ? tab === "finished"
-        ? "finished_products_inventory_history"
-        : "raw_materials_inventory_history"
-      : tab === "finished"
-        ? "finished_products_inventory"
-        : "raw_materials_inventory";
+    const inventoryTable = isHistory ? tabCfg.hist : tabCfg.inv;
 
     let query = supabase.from(inventoryTable).select("*");
     if (isHistory) query = query.eq("inventory_date", date);
@@ -195,7 +215,7 @@ export default function InventoryPage() {
     requestAnimationFrame(() => window.print());
   }
 
-  // ✅ Filter items by warehouse - SAME PATTERN AS INVENTORYPAGE
+  // Filter items by warehouse
   const filteredItems = useMemo(() => {
     if (warehouseFilter.length === 0) {
       // No filter = show all items
@@ -247,6 +267,8 @@ export default function InventoryPage() {
       ? warehouseFilter[0]
       : `${warehouseFilter.length} warehouses`;
 
+  const tabLabel = cfg(tab).label;
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -286,8 +308,7 @@ export default function InventoryPage() {
           <div>
             <h1 className="text-xl font-semibold text-gray-900">Inventory Summary</h1>
             <p className="print-subtitle text-sm text-gray-500 mt-0.5">
-              {date ? `Snapshot: ${date}` : "Live Inventory View"} &mdash;{" "}
-              {tab === "finished" ? "Finished Products" : "Raw Materials"}
+              {date ? `Snapshot: ${date}` : "Live Inventory View"} &mdash; {tabLabel}
               {warehouseLabel && ` — 📦 ${warehouseLabel}`}
             </p>
           </div>
@@ -302,27 +323,22 @@ export default function InventoryPage() {
         {/* Toolbar */}
         <div className="no-print flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
           <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
-            <button
-              onClick={() => setTab("finished")}
-              className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-                tab === "finished" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-              }`}
-            >
-              Finished Products
-            </button>
-            <button
-              onClick={() => setTab("raw")}
-              className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-                tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-              }`}
-            >
-              Raw Materials
-            </button>
+            {TAB_ORDER.map((t, idx) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`px-4 py-1.5 text-sm font-medium transition-colors ${idx > 0 ? "border-l border-gray-200" : ""} ${
+                  tab === t ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {cfg(t).label}
+              </button>
+            ))}
           </div>
 
           <InventoryCalendar tab={tab} date={date} onSelectDate={setDate} />
 
-          {/* ✅ Warehouse filter - CONNECTED */}
+          {/* Warehouse filter */}
           <WarehouseMultiSelect
             options={availableWarehouses}
             selected={warehouseFilter}
@@ -432,7 +448,7 @@ export default function InventoryPage() {
         <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
           <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-gray-50">
             <span className="text-xs font-medium uppercase tracking-wide text-gray-500">
-              {tab === "finished" ? "Finished Products" : "Raw Materials"} — detail
+              {tabLabel} — detail
               {warehouseLabel && ` · ${warehouseLabel}`}
             </span>
             {loading && <span className="text-xs text-gray-400 animate-pulse">Loading…</span>}
@@ -520,7 +536,7 @@ export default function InventoryPage() {
         <div className="print-footer hidden print:block mt-4 text-xs text-gray-400 border-t border-dashed border-gray-300 pt-3">
           <div className="flex justify-between">
             <span>
-              Inventory System — {tab === "finished" ? "Finished Products" : "Raw Materials"}
+              Inventory System — {tabLabel}
               {warehouseLabel && ` — Warehouse: ${warehouseLabel}`}
             </span>
             <span>Printed: {printedAt}</span>

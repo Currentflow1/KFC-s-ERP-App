@@ -61,7 +61,7 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
   return (
     <div className="flex flex-col gap-1" ref={ref}>
       {label && (
-        <label className="text-xs font-medium uppercase tracking-wide text-gray-500">{label}</label>
+        <label className="text-xs font-semibold uppercase tracking-wide text-black">{label}</label>
       )}
       <div className="relative">
         <button
@@ -71,17 +71,17 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
           className={`w-full flex items-center justify-between rounded-md border px-3 py-1.5 text-sm text-left transition-colors ${
             disabled
               ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
-              : "bg-white border-gray-200 text-gray-800 hover:border-blue-400 focus:outline-none"
+              : "bg-white border-gray-300 text-black hover:border-blue-400 focus:outline-none"
           }`}
         >
-          <span className={value ? "text-gray-800" : "text-gray-400"}>
+          <span className={value ? "text-black" : "text-gray-500"}>
             {value || placeholder || "Select…"}
           </span>
           <span className="flex items-center gap-1 ml-2 shrink-0">
             {value && !disabled && (
-              <span onClick={clear} className="text-gray-400 hover:text-gray-600 text-xs cursor-pointer px-1">✕</span>
+              <span onClick={clear} className="text-black hover:text-gray-600 text-xs cursor-pointer px-1">✕</span>
             )}
-            <span className="text-gray-400 text-xs">{open ? "▲" : "▼"}</span>
+            <span className="text-black text-xs">{open ? "▲" : "▼"}</span>
           </span>
         </button>
         {open && (
@@ -93,16 +93,16 @@ function SearchableSelect({ label, value, options, onChange, placeholder, disabl
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search…"
-                className="w-full text-sm px-2 py-1.5 border border-gray-200 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full text-sm px-2 py-1.5 border border-gray-300 rounded-md text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
             <ul className="max-h-40 overflow-y-auto">
               {filtered.length === 0
-                ? <li className="px-3 py-2 text-sm text-gray-400">No results</li>
+                ? <li className="px-3 py-2 text-sm text-gray-500">No results</li>
                 : filtered.map((o) => (
                   <li key={o} onClick={() => select(o)}
                     className={`px-3 py-2 text-sm cursor-pointer hover:bg-blue-50 hover:text-blue-700 transition-colors ${
-                      value === o ? "bg-blue-50 text-blue-700 font-medium" : "text-gray-700"
+                      value === o ? "bg-blue-50 text-blue-700 font-medium" : "text-black"
                     }`}>
                     {o}
                   </li>
@@ -429,12 +429,12 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
   if (role === null) {
     return (
-      <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10">
+      <div className="fixed bottom-6 right-6 bg-white text-black border shadow-lg p-4 w-80 rounded-lg z-10">
         <div className="flex justify-between items-start mb-3">
-          <h2 className="font-bold text-base">{item.name}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          <h2 className="font-bold text-base text-black">{item.name}</h2>
+          <button onClick={onClose} className="text-black hover:text-gray-600 text-lg leading-none">✕</button>
         </div>
-        <p className="text-sm text-gray-400 text-center py-6 animate-pulse">Checking permissions…</p>
+        <p className="text-sm text-black text-center py-6 animate-pulse">Checking permissions…</p>
       </div>
     );
   }
@@ -443,15 +443,15 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
   if (role !== "admin") {
     return (
-      <div className="fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10">
+      <div className="fixed bottom-6 right-6 bg-white text-black border shadow-lg p-4 w-80 rounded-lg z-10">
         <div className="flex justify-between items-start mb-4">
-          <h2 className="font-bold text-base">{item.name}</h2>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none">✕</button>
+          <h2 className="font-bold text-base text-black">{item.name}</h2>
+          <button onClick={onClose} className="text-black hover:text-gray-600 text-lg leading-none">✕</button>
         </div>
         <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-6 text-center">
           <div className="text-3xl mb-2">🔒</div>
           <p className="text-sm font-semibold text-red-700">Access Restricted</p>
-          <p className="text-xs text-red-400 mt-1">Only admins can manipulate inventory.</p>
+          <p className="text-xs text-red-600 mt-1">Only admins can manipulate inventory.</p>
         </div>
       </div>
     );
@@ -463,19 +463,19 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
   const tabLabel = tab === "raw" ? "Raw Material" : tab === "packaging" ? "Packaging" : "Finished Product";
 
   return (
-    <div className={`fixed bottom-6 right-6 bg-white text-gray-900 border shadow-lg p-4 w-80 rounded-lg z-10 max-h-[90vh] overflow-y-auto transition-opacity ${isFinalized ? "opacity-60 pointer-events-none" : ""}`}>
+    <div className={`fixed bottom-6 right-6 bg-white text-black border shadow-lg p-4 w-80 rounded-lg z-10 max-h-[90vh] overflow-y-auto transition-opacity ${isFinalized ? "opacity-60 pointer-events-none" : ""}`}>
 
       {/* Header */}
       <div className="flex justify-between items-start mb-3">
         <div>
-          <h2 className="font-bold text-base leading-tight">{item.name}</h2>
+          <h2 className="font-bold text-base leading-tight text-black">{item.name}</h2>
           {warehouse && (
             <span className={`inline-flex items-center gap-1 text-xs font-semibold mt-1 px-2 py-0.5 rounded-full ${warehouseStyle(warehouse)}`}>
               📦 {warehouse}
             </span>
           )}
         </div>
-        <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-lg leading-none ml-2 shrink-0">✕</button>
+        <button onClick={onClose} className="text-black hover:text-gray-600 text-lg leading-none ml-2 shrink-0">✕</button>
       </div>
 
       {/* Finalization lock banner */}
@@ -484,13 +484,13 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
           <div className="font-semibold flex items-center gap-1">
             <span>🔒</span> Panel Locked
           </div>
-          <p className="mt-1 text-red-600">Today is finalized. Undo to make changes.</p>
+          <p className="mt-1 text-red-700">Today is finalized. Undo to make changes.</p>
         </div>
       )}
 
       {/* Offline banner */}
       {offlineMode && (
-        <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <span className="font-semibold">Offline mode</span> — using cached permissions. Changes sync when wifi returns.
         </div>
       )}
@@ -498,22 +498,22 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
       {/* Stats */}
       <div className="grid grid-cols-3 gap-2 mb-3 text-center text-xs">
         <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-400 mb-0.5">Current</div>
-          <div className="font-semibold text-gray-800">{displayedCurrent}</div>
+          <div className="text-black mb-0.5">Current</div>
+          <div className="font-semibold text-black">{displayedCurrent}</div>
         </div>
         <div className="bg-gray-50 rounded p-2">
-          <div className="text-gray-400 mb-0.5">Actual</div>
-          <div className="font-semibold text-gray-800">{Number(item.actual_bal ?? 0)}</div>
+          <div className="text-black mb-0.5">Actual</div>
+          <div className="font-semibold text-black">{Number(item.actual_bal ?? 0)}</div>
         </div>
         <div className="bg-red-50 rounded p-2">
-          <div className="text-red-400 mb-0.5">Loss</div>
+          <div className="text-red-600 mb-0.5">Loss</div>
           <div className="font-semibold text-red-600">{Number(item.loss ?? 0)}</div>
         </div>
       </div>
 
       {/* Pending orders */}
       {(pendingIn > 0 || pendingOut > 0) && (
-        <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        <div className="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
           <div className="font-semibold mb-0.5">Pending orders (not yet closed)</div>
           {pendingIn  > 0 && <div>↓ Incoming: +{pendingIn}</div>}
           {pendingOut > 0 && <div>↑ Outgoing: −{pendingOut}</div>}
@@ -522,9 +522,9 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
       {/* ── Stock Movement ── */}
       <div className="border-t border-gray-100 pt-3">
-        <p className="text-xs font-semibold text-gray-700 mb-3">
+        <p className="text-xs font-semibold text-black mb-3">
           {isIncoming ? "Add Incoming" : "Add Outgoing"}
-          <span className="ml-1.5 text-gray-400 font-normal">— {tabLabel}</span>
+          <span className="ml-1.5 text-black font-normal">— {tabLabel}</span>
         </p>
 
         {/* Incoming / Outgoing toggle */}
@@ -533,7 +533,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             onClick={() => { setStockMode("incoming"); setQty(""); setTxError(null); setSupplierName(""); setRepresentativeEmployee(""); setStaffEmployee(""); }}
             disabled={isFinalized}
             className={`flex-1 py-1.5 text-xs font-medium transition-colors ${
-              isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              isIncoming ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"
             } ${isFinalized ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             ↓ Incoming
@@ -542,7 +542,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             onClick={() => { setStockMode("outgoing"); setQty(""); setTxError(null); setSupplierName(""); }}
             disabled={isFinalized}
             className={`flex-1 py-1.5 text-xs font-medium border-l border-gray-200 transition-colors ${
-              !isIncoming ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              !isIncoming ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"
             } ${isFinalized ? "opacity-50 cursor-not-allowed" : ""}`}
           >
             ↑ Outgoing
@@ -599,7 +599,7 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
           {/* Qty */}
           <div className="flex flex-col gap-1">
-            <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
+            <label className="text-xs font-semibold uppercase tracking-wide text-black">
               {isIncoming ? "Incoming Qty" : "Outgoing Qty"}
             </label>
             <input
@@ -609,11 +609,11 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
               type="number"
               min="0"
               disabled={isFinalized}
-              className={`border p-2 w-full rounded text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFinalized ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""}`}
+              className={`border border-gray-300 p-2 w-full rounded text-sm text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFinalized ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""}`}
             />
           </div>
 
-          {txError && <p className="text-xs text-red-500">{txError}</p>}
+          {txError && <p className="text-xs text-red-600">{txError}</p>}
 
           <button
             onClick={applyChange}
@@ -630,14 +630,14 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
 
       {/* ── Count Correction ── */}
       <div className="border-t border-gray-100 pt-3 mt-3 space-y-2">
-        <p className="text-xs font-semibold text-gray-700 mb-2">Count Correction</p>
+        <p className="text-xs font-semibold text-black mb-2">Count Correction</p>
 
         {!monitoringEmployee && (
-          <p className="text-xs text-amber-600">Select a monitoring employee above first.</p>
+          <p className="text-xs text-amber-700">Select a monitoring employee above first.</p>
         )}
 
         <div className="flex flex-col gap-1">
-          <label className="text-xs font-medium uppercase tracking-wide text-gray-500">
+          <label className="text-xs font-semibold uppercase tracking-wide text-black">
             Actual count
           </label>
           <input
@@ -647,12 +647,12 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
             type="number"
             min="0"
             disabled={isFinalized}
-            className={`border p-2 w-full rounded text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFinalized ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""}`}
+            className={`border border-gray-300 p-2 w-full rounded text-sm text-black placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 ${isFinalized ? "bg-gray-100 text-gray-400 cursor-not-allowed" : ""}`}
           />
         </div>
 
         {lossPreview !== null && (
-          <p className={`text-xs ${lossPreview > 0 ? "text-red-500" : "text-green-600"}`}>
+          <p className={`text-xs ${lossPreview > 0 ? "text-red-600" : "text-green-700"}`}>
             Loss preview: {lossPreview}{lossPreview === 0 ? " (no loss)" : ""}
           </p>
         )}
