@@ -60,15 +60,15 @@ function txLogTable(tab) {
   if (tab === "packaging") return "packaging_transaction_log";
   return "finished_products_transaction_log";
 }
-function whTable(tab) {
-  if (tab === "raw")       return "raw_materials_warehouses";
-  if (tab === "packaging") return "packaging_warehouses";
-  return "finished_products_warehouses";
-}
-function whFkCol(tab) {
-  if (tab === "raw")       return "raw_material_id";
-  if (tab === "packaging") return "packaging_id";
-  return "finished_product_id";
+// The *live inventory* table — this is what inventory_id on history/tx-log
+// rows actually points to (see the *_inventory_id_fkey constraints in the
+// schema). Each row here has exactly one `warehouse`, so this is the
+// correct source for resolving a history/tx row's warehouse when the row
+// itself doesn't carry its own `warehouse` value.
+function invTable(tab) {
+  if (tab === "raw")       return "raw_materials_inventory";
+  if (tab === "packaging") return "packaging_inventory";
+  return "finished_products_inventory";
 }
 // Raw and Packaging both carry a supplier on incoming stock; Finished does not.
 function hasSupplierCol(tab) {
@@ -528,8 +528,13 @@ export default function RecordsPage() {
   const [txLoad, setTxLoad] = useState(false);
   const [txOpen, setTxOpen] = useState(true);
 
-  const [histWarehouseMap, setHistWarehouseMap] = useState({});
-  const [txWarehouseMap,   setTxWarehouseMap]   = useState({});
+  // Single map: inventory_id -> warehouse. Built straight off the live
+  // inventory table (raw_materials_inventory / finished_products_inventory /
+  // packaging_inventory), since that's exactly what inventory_id on both
+  // the *_inventory_history and *_transaction_log tables points to (see the
+  // *_inventory_id_fkey constraints). Used only as a fallback for rows that
+  // don't already carry their own `warehouse` value directly.
+  const [inventoryWarehouseMap, setInventoryWarehouseMap] = useState({});
 
   const [histPage, setHistPage] = useState(1);
   const [txPage,   setTxPage]   = useState(1);
@@ -538,23 +543,22 @@ export default function RecordsPage() {
   const tabRef = useRef("finished");
   tabRef.current = tab;
 
-  // ── warehouse maps ────────────────────────────────────────────────────────
+  // ── warehouse map ─────────────────────────────────────────────────────────
 
-  async function loadWarehouseMaps(whichTab) {
-    const fkCol = whFkCol(whichTab);
-    const { data } = await supabase
-      .from(whTable(whichTab))
-      .select(`${fkCol}, warehouse`);
+  async function loadWarehouseMap(whichTab) {
+    const { data, error } = await supabase
+      .from(invTable(whichTab))
+      .select("id, warehouse");
+    if (error) {
+      console.error("[loadWarehouseMap] error:", error.message);
+      setInventoryWarehouseMap({});
+      return;
+    }
     const map = {};
     (data || []).forEach((row) => {
-      const id = row[fkCol];
-      if (!map[id]) map[id] = [];
-      map[id].push(row.warehouse);
+      if (row.warehouse) map[row.id] = row.warehouse;
     });
-    const strMap = {};
-    Object.entries(map).forEach(([id, arr]) => { strMap[id] = arr.join(", "); });
-    setHistWarehouseMap(strMap);
-    setTxWarehouseMap(strMap);
+    setInventoryWarehouseMap(map);
   }
 
   // ── data loaders ──────────────────────────────────────────────────────────
@@ -602,7 +606,7 @@ export default function RecordsPage() {
   }
 
   useEffect(() => {
-    loadWarehouseMaps(tab);
+    loadWarehouseMap(tab);
     loadSummary(tab);
     loadHistory(tab, dateFrom, dateTo);
     loadTxLog(tab, dateFrom, dateTo);
@@ -620,26 +624,21 @@ export default function RecordsPage() {
     loadTxLog(tab, "", "");
   }
 
-  function resolveHistWarehouse(row) {
+  function resolveWarehouse(row) {
     if (row.warehouse) return row.warehouse;
-    return histWarehouseMap[row.inventory_id] ?? "—";
-  }
-
-  function resolveTxWarehouse(row) {
-    if (row.warehouse) return row.warehouse;
-    return txWarehouseMap[row.inventory_id] ?? "—";
+    return inventoryWarehouseMap[row.inventory_id] ?? "—";
   }
 
   // ── enriched rows ─────────────────────────────────────────────────────────
 
   const enrichedHistRows = histRows.map((r) => ({
     ...r,
-    _warehouse: resolveHistWarehouse(r),
+    _warehouse: resolveWarehouse(r),
   }));
 
   const enrichedTxRows = txRows.map((r) => ({
     ...r,
-    _warehouse: resolveTxWarehouse(r),
+    _warehouse: resolveWarehouse(r),
   }));
 
   // ── print / export helpers ────────────────────────────────────────────────
