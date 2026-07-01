@@ -313,15 +313,16 @@ export default function ProductsPage() {
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Name</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Category</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouses</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Low Stock Value</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="5">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="6">Loading…</td></tr>
               ) : filteredFinished.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="5">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="6">
                   {search ? `No products matching "${search}"` : "No finished products yet"}
                 </td></tr>
               ) : filteredFinished.map((p) => (
@@ -334,6 +335,7 @@ export default function ProductsPage() {
                   </td>
                   <td className="px-4 py-3 text-gray-500">{p.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{renderWarehouses(p.finished_products_warehouses)}</td>
+                  <td className="px-4 py-3 text-gray-500">{p.low_stock_value}</td>
                   <td className="px-4 py-3">
                     {p.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
@@ -369,15 +371,16 @@ export default function ProductsPage() {
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Category</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouses</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Low Stock Value</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="6">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="7">Loading…</td></tr>
               ) : filteredRaw.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="6">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="7">
                   {search ? `No materials matching "${search}"` : "No raw materials yet"}
                 </td></tr>
               ) : filteredRaw.map((m) => (
@@ -391,6 +394,7 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-gray-500">{m.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{m.supplier_contact}</td>
                   <td className="px-4 py-3 text-gray-500">{renderWarehouses(m.raw_materials_warehouses)}</td>
+                  <td className="px-4 py-3 text-gray-500">{m.low_stock_value}</td>
                   <td className="px-4 py-3">
                     {m.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">
@@ -426,15 +430,16 @@ export default function ProductsPage() {
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Category</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Warehouses</th>
+                <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Low Stock Value</th>
                 <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Status</th>
                 <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {loading ? (
-                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="6">Loading…</td></tr>
+                <tr><td className="px-4 py-4 text-sm text-gray-400" colSpan="7">Loading…</td></tr>
               ) : filteredPackaging.length === 0 ? (
-                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="6">
+                <tr><td className="px-4 py-8 text-sm text-gray-400 text-center" colSpan="7">
                   {search ? `No packaging matching "${search}"` : "No packaging items yet"}
                 </td></tr>
               ) : filteredPackaging.map((m) => (
@@ -448,6 +453,7 @@ export default function ProductsPage() {
                   <td className="px-4 py-3 text-gray-500">{m.category_name}</td>
                   <td className="px-4 py-3 text-gray-500">{m.supplier_contact}</td>
                   <td className="px-4 py-3 text-gray-500">{renderWarehouses(m.packaging_warehouses)}</td>
+                  <td className="px-4 py-3 text-gray-500">{m.low_stock_value}</td>
                   <td className="px-4 py-3">
                     {m.discontinued ? (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-red-600 bg-red-50 px-2 py-0.5 rounded-full">

@@ -31,6 +31,22 @@ function summarize(rows) {
 function fmt(n) { return Number(n ?? 0).toLocaleString(); }
 function raw(n) { return Number(n ?? 0); }
 
+// Renders the "Loss" cell.
+// loss is computed as (actual_bal - current_bal):
+// loss < 0  -> deficit (actual < current) -> red, shown with its negative sign
+// loss > 0  -> surplus (actual > current) -> green, prefixed with "+"
+// loss = 0  -> dash
+function renderLoss(lossVal, dimClass = "") {
+  const n = raw(lossVal);
+  if (n < 0) {
+    return <span className={`text-red-500 font-medium ${dimClass}`}>{fmt(n)}</span>;
+  }
+  if (n > 0) {
+    return <span className={`text-green-600 font-medium ${dimClass}`}>+{fmt(n)}</span>;
+  }
+  return <span className="text-gray-300">—</span>;
+}
+
 function fmtDateTime(val) {
   if (!val) return "—";
   const d = new Date(val);
@@ -847,9 +863,7 @@ export default function RecordsPage() {
                           <td className="px-4 py-2.5 text-black font-semibold">{fmt(row.current_bal)}</td>
                           <td className="px-4 py-2.5 text-black">{fmt(row.actual_bal)}</td>
                           <td className="px-4 py-2.5">
-                            {Number(row.loss) > 0
-                              ? <span className="text-orange-500 font-medium">{fmt(row.loss)}</span>
-                              : <span className="text-gray-300">—</span>}
+                            {renderLoss(raw(row.actual_bal) - raw(row.current_bal))}
                           </td>
                           <td className="px-4 py-2.5 text-black whitespace-nowrap">{row._warehouse}</td>
                           <td className="px-4 py-2.5 text-black whitespace-nowrap text-xs">{fmtDateTime(row.created_at)}</td>
@@ -980,9 +994,7 @@ export default function RecordsPage() {
                               {row.actual_bal != null ? fmt(row.actual_bal) : <span className="text-gray-300">—</span>}
                             </td>
                             <td className="px-4 py-2.5">
-                              {Number(row.loss) > 0
-                                ? <span className={`text-orange-500 font-medium ${dimClass}`}>{fmt(row.loss)}</span>
-                                : <span className="text-gray-300">—</span>}
+                              {renderLoss(row.loss, dimClass)}
                             </td>
                             <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>
                             <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.representative_employee ?? "—"}</td>

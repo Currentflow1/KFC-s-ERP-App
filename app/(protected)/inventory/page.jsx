@@ -57,6 +57,10 @@ const TAB_CONFIG = {
 };
 const TAB_ORDER = ["finished", "raw", "packaging"];
 
+// Fallback used only if a row's static record is missing/unreachable —
+// mirrors the DB column default so behavior degrades gracefully.
+const DEFAULT_LOW_STOCK_VALUE = 10;
+
 function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
 function txTable(tab) { return cfg(tab).tx; }
 function invTable(tab) { return cfg(tab).inv; }
@@ -244,11 +248,18 @@ export default function InventoryPage() {
 
     setLoading(true);
     try {
-      const { data: discData } = await supabase
+      // Pull discontinued flag + low_stock_value together — one round trip
+      // instead of two, and it keeps the "low stock" threshold per-product
+      // instead of a single hardcoded number for the whole table.
+      const { data: staticData } = await supabase
         .from(staticTable(t))
-        .select("id")
-        .eq("discontinued", true);
-      const discontinuedIds = new Set((discData || []).map((r) => r.id));
+        .select("id, discontinued, low_stock_value");
+      const discontinuedIds = new Set(
+        (staticData || []).filter((r) => r.discontinued).map((r) => r.id)
+      );
+      const lowStockById = new Map(
+        (staticData || []).map((r) => [r.id, Number(r.low_stock_value ?? DEFAULT_LOW_STOCK_VALUE)])
+      );
 
       let query = supabase.from(isHistory ? histTable(t) : invTable(t)).select("*");
       if (isHistory) query = query.eq("inventory_date", chosenDate);
@@ -287,7 +298,9 @@ export default function InventoryPage() {
         const loss = Math.max(0, current_bal - actual_bal);
 
         const productId = row[fk];
-        const isDiscontinued = discontinuedIds.has(productId ?? liveId);
+        const staticId = productId ?? liveId;
+        const isDiscontinued = discontinuedIds.has(staticId);
+        const low_stock_value = lowStockById.get(staticId) ?? DEFAULT_LOW_STOCK_VALUE;
 
         return {
           id: liveId,
@@ -299,6 +312,7 @@ export default function InventoryPage() {
           current_bal,
           actual_bal,
           loss,
+          low_stock_value,
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
           _discontinued: isDiscontinued,
@@ -445,11 +459,15 @@ export default function InventoryPage() {
   async function prewarmOtherTab(whichTab) {
     const t = whichTab;
     try {
-      const { data: discData } = await supabase
+      const { data: staticData } = await supabase
         .from(staticTable(t))
-        .select("id")
-        .eq("discontinued", true);
-      const discontinuedIds = new Set((discData || []).map((r) => r.id));
+        .select("id, discontinued, low_stock_value");
+      const discontinuedIds = new Set(
+        (staticData || []).filter((r) => r.discontinued).map((r) => r.id)
+      );
+      const lowStockById = new Map(
+        (staticData || []).map((r) => [r.id, Number(r.low_stock_value ?? DEFAULT_LOW_STOCK_VALUE)])
+      );
 
       const [{ data: invRows }, { data: txRows }] = await Promise.all([
         supabase.from(invTable(t)).select("*"),
@@ -477,6 +495,7 @@ export default function InventoryPage() {
         // don't just read row.loss.
         const loss = Math.max(0, current_bal - actual_bal);
         const productId = row[fk];
+        const staticId = productId ?? row.id;
         return {
           id: row.id,
           name: row.name,
@@ -487,9 +506,10 @@ export default function InventoryPage() {
           current_bal,
           actual_bal,
           loss,
+          low_stock_value: lowStockById.get(staticId) ?? DEFAULT_LOW_STOCK_VALUE,
           _pendingIncoming: tx.incoming,
           _pendingOutgoing: tx.outgoing,
-          _discontinued: discontinuedIds.has(productId ?? row.id),
+          _discontinued: discontinuedIds.has(staticId),
           raw_material_id: row.raw_material_id ?? null,
           finished_product_id: row.finished_product_id ?? null,
           packaging_id: row.packaging_id ?? null,

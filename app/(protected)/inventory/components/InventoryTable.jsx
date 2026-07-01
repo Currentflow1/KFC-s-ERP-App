@@ -11,6 +11,10 @@ function warehouseStyle(name) {
     : "bg-green-100 text-black border border-green-200";
 }
 
+// Fallback if an item somehow arrives without a low_stock_value (should be
+// rare — loadData/prewarmOtherTab in the page already default it to 10).
+const DEFAULT_LOW_STOCK_VALUE = 10;
+
 export default function InventoryTable({ items, loading, onSelect, isFinalized, warehouseFilter }) {
   if (loading) {
     return (
@@ -49,6 +53,17 @@ export default function InventoryTable({ items, loading, onSelect, isFinalized, 
           {items.map((item) => {
             const isDiscontinued = item._discontinued;
             const isLocked = isFinalized || isDiscontinued;
+            const lowStockValue = Number(item.low_stock_value ?? DEFAULT_LOW_STOCK_VALUE);
+            const isOut = item.current_bal === 0;
+            const isLow = !isOut && item.current_bal < lowStockValue;
+
+            // Loss/excess: recomputed directly from current_bal vs actual_bal
+            // rather than trusting item.loss, since the stored/live "loss"
+            // value is clamped with Math.max(0, ...) upstream and can never
+            // represent a surplus (actual count higher than expected).
+            // diff > 0 → shrinkage/loss (red). diff < 0 → surplus (green).
+            const diff = Number(item.current_bal ?? 0) - Number(item.actual_bal ?? 0);
+            const hasCount = item.actual_bal !== null && item.actual_bal !== undefined;
 
             return (
               <tr
@@ -107,19 +122,32 @@ export default function InventoryTable({ items, loading, onSelect, isFinalized, 
                   {item.outgoing_bal > 0 ? `-${item.outgoing_bal}` : item.outgoing_bal}
                 </td>
                 <td className="px-4 py-3 text-right">
-                  <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${
-                    item.current_bal === 0
-                      ? "bg-red-100 text-red-700"
-                      : item.current_bal < 100
-                        ? "bg-amber-100 text-amber-700"
-                        : "bg-gray-100 text-gray-700"
-                  }`}>
+                  <span
+                    className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${
+                      isOut
+                        ? "bg-red-100 text-red-700"
+                        : isLow
+                          ? "bg-amber-100 text-amber-700"
+                          : "bg-gray-100 text-gray-700"
+                    }`}
+                    title={isLow ? `Below low stock threshold (${lowStockValue})` : undefined}
+                  >
                     {item.current_bal}
                   </span>
                 </td>
                 <td className="px-4 py-3 text-right text-gray-600">{item.actual_bal}</td>
-                <td className="px-4 py-3 text-right font-semibold text-red-500">
-                  {item.loss > 0 ? item.loss : <span className="text-gray-300 font-normal">—</span>}
+                <td className="px-4 py-3 text-right font-semibold">
+                  {!hasCount || diff === 0 ? (
+                    <span className="text-gray-300 font-normal">—</span>
+                  ) : diff > 0 ? (
+                    <span className="text-red-500" title="Actual count is below the current balance">
+                      -{diff}
+                    </span>
+                  ) : (
+                    <span className="text-green-600" title="Actual count exceeds the current balance">
+                      +{Math.abs(diff)}
+                    </span>
+                  )}
                 </td>
               </tr>
             );

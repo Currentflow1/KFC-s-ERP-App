@@ -7,14 +7,26 @@ import InventoryCalendar from "@/app/(protected)/inventory/components/InventoryC
 import {
   ComposedChart,
   Bar,
+  Cell,
   XAxis,
   YAxis,
+  ReferenceLine,
   Tooltip,
   ResponsiveContainer,
   CartesianGrid,
 } from "recharts";
 
-const LOW_STOCK_THRESHOLD = 100;
+// Fallback only — real threshold comes from each product's own
+// low_stock_value (Products page). Mirrors the DB column default.
+const DEFAULT_LOW_STOCK_VALUE = 10;
+
+// Coerce any DB value to a finite number, falling back instead of ever
+// producing NaN (which React refuses to render and blank/odd values from
+// Supabase — null, "", non-numeric strings — would otherwise trigger).
+function toNum(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
 
 // ─── Tab config ───────────────────────────────────────────────────────────
 // Single source of truth for which tables/labels each tab uses, mirroring
@@ -27,6 +39,8 @@ const TAB_CONFIG = {
     inv: "finished_products_inventory",
     hist: "finished_products_inventory_history",
     wh: "finished_products_warehouses",
+    tx: "finished_products_transaction_log",
+    fk: "finished_product_id",
   },
   raw: {
     label: "Raw Materials",
@@ -34,6 +48,8 @@ const TAB_CONFIG = {
     inv: "raw_materials_inventory",
     hist: "raw_materials_inventory_history",
     wh: "raw_materials_warehouses",
+    tx: "raw_materials_transaction_log",
+    fk: "raw_material_id",
   },
   packaging: {
     label: "Packaging",
@@ -41,11 +57,22 @@ const TAB_CONFIG = {
     inv: "packaging_inventory",
     hist: "packaging_inventory_history",
     wh: "packaging_warehouses",
+    tx: "packaging_transaction_log",
+    fk: "packaging_id",
   },
 };
 const TAB_ORDER = ["finished", "raw", "packaging"];
 
 function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
+
+// ── Diverging-chart helper ────────────────────────────────────────────────
+// variance = actual_bal - current_bal. Negative = shrinkage/loss (red),
+// positive = surplus/overage (green), zero = matched (neutral gray).
+function varianceColor(variance) {
+  if (variance < 0) return "#DC2626";
+  if (variance > 0) return "#16A34A";
+  return "#9CA3AF";
+}
 
 // ── Warehouse dropdown (multi-select with checkboxes) ────────────────────────
 function WarehouseMultiSelect({ options, selected, onChange }) {
@@ -132,17 +159,66 @@ export default function InventoryPage() {
   const [warehouseFilter, setWarehouseFilter] = useState([]);
   const [availableWarehouses, setAvailableWarehouses] = useState([]);
 
+  const tabRef = useRef(tab);
+  const dateRef = useRef(date);
+  tabRef.current = tab;
+  dateRef.current = date;
+
   useEffect(() => {
     loadAvailableWarehouses();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   useEffect(() => {
     loadData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, date]);
 
   useEffect(() => {
     setWarehouseFilter([]);
   }, [tab, date]);
+
+  // ── Realtime ──────────────────────────────────────────────────────────────
+  // Keep the dashboard live: pending orders (tx table), finalize/undo
+  // (inv table), and newly finalized history (hist table) all push updates
+  // here instead of requiring a manual refresh or tab switch to see them.
+  useEffect(() => {
+    const tabCfg = cfg(tab);
+
+    const txChannel = supabase
+      .channel(`dashboard-${tab}-tx`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: tabCfg.tx },
+        () => { if (tabRef.current === tab) loadData(); }
+      )
+      .subscribe();
+
+    const invChannel = supabase
+      .channel(`dashboard-${tab}-inv`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: tabCfg.inv },
+        () => { if (tabRef.current === tab) loadData(); }
+      )
+      .subscribe();
+
+    const histChannel = supabase
+      .channel(`dashboard-${tab}-hist`)
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: tabCfg.hist },
+        () => { if (tabRef.current === tab) loadData(); }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(txChannel);
+      supabase.removeChannel(invChannel);
+      supabase.removeChannel(histChannel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
 
   // ── Load available warehouses from warehouse junction tables ────────────────
   async function loadAvailableWarehouses() {
@@ -168,46 +244,123 @@ export default function InventoryPage() {
   }
 
   // ── Load inventory data ───────────────────────────────────────────────────
+  //
+  // IMPORTANT: inventory rows are NOT keyed by the static product's id.
+  // Each inventory row (one per product per warehouse) has its own id and
+  // points back to the product via a foreign key (raw_material_id /
+  // finished_product_id / packaging_id). The previous version of this page
+  // tried to look up `map[staticItem.id]` using a map keyed by the
+  // inventory row's own id — those are two different UUIDs, so the lookup
+  // essentially never matched. It's worse for history rows specifically,
+  // since the history table doesn't store the foreign key at all, so no
+  // date ever had a chance of matching. Below we join correctly in both
+  // directions instead of guessing at shared ids.
   async function loadData() {
     setLoading(true);
-
     const isHistory = date !== "";
     const tabCfg = cfg(tab);
 
-    const { data: staticItems } = await supabase
-      .from(tabCfg.static)
-      .select("id, name, category_name");
+    try {
+      const { data: staticItems } = await supabase
+        .from(tabCfg.static)
+        .select("id, name, category_name, low_stock_value, discontinued");
+      const staticById = new Map((staticItems || []).map((s) => [s.id, s]));
 
-    const inventoryTable = isHistory ? tabCfg.hist : tabCfg.inv;
+      if (isHistory) {
+        // History rows carry their own name/warehouse/balances as a
+        // point-in-time snapshot, but not the fk back to the product.
+        // Recover it via inventory_id → the live inventory row's fk
+        // (the inventory row's id is stable across days; only its
+        // balances get rolled forward on finalize).
+        const [{ data: histRows }, { data: liveInvRows }] = await Promise.all([
+          supabase.from(tabCfg.hist).select("*").eq("inventory_date", date),
+          supabase.from(tabCfg.inv).select(`id, ${tabCfg.fk}`),
+        ]);
+        const fkByInventoryId = new Map(
+          (liveInvRows || []).map((r) => [r.id, r[tabCfg.fk]])
+        );
 
-    let query = supabase.from(inventoryTable).select("*");
-    if (isHistory) query = query.eq("inventory_date", date);
-    const { data: inventoryItems } = await query;
+        const merged = (histRows || []).map((row) => {
+          const fk = fkByInventoryId.get(row.inventory_id) ?? null;
+          const s = fk != null ? staticById.get(fk) : null;
+          const current_bal = toNum(row.current_bal);
+          const actual_bal = toNum(row.actual_bal);
+          return {
+            id: row.inventory_id,
+            name: row.name,
+            category_id: s?.category_name ?? null,
+            warehouse: row.warehouse ?? null,
+            beg_bal: toNum(row.beg_bal),
+            incoming_bal: toNum(row.incoming_bal),
+            outgoing_bal: toNum(row.outgoing_bal),
+            current_bal,
+            actual_bal,
+            // Signed variance: negative = shortage, positive = surplus.
+            variance: actual_bal - current_bal,
+            low_stock_value: toNum(s?.low_stock_value, DEFAULT_LOW_STOCK_VALUE),
+            _discontinued: !!s?.discontinued,
+          };
+        });
 
-    const map = {};
-    (inventoryItems || []).forEach((i) => {
-      const key = isHistory ? i.inventory_id : i.id;
-      map[key] = i;
-    });
+        setItems(merged);
+        return;
+      }
 
-    const merged = (staticItems || []).map((s) => {
-      const inv = map[s.id];
-      return {
-        id:           s.id,
-        name:         s.name,
-        category_id:  s.category_name,
-        warehouse:    inv?.warehouse ?? null,
-        beg_bal:      inv?.beg_bal      ?? 0,
-        incoming_bal: inv?.incoming_bal ?? 0,
-        outgoing_bal: inv?.outgoing_bal ?? 0,
-        current_bal:  inv?.current_bal  ?? 0,
-        actual_bal:   inv?.actual_bal   ?? 0,
-        loss:         inv?.loss         ?? 0,
-      };
-    });
+      // Live view — same shape as the Inventory tab: base inventory row
+      // plus any not-yet-finalized pending tx folded in, so the dashboard
+      // always matches what's currently shown there in real time.
+      const [{ data: invRows }, { data: txRows }] = await Promise.all([
+        supabase.from(tabCfg.inv).select("*"),
+        supabase
+          .from(tabCfg.tx)
+          .select("inventory_id, incoming_bal, outgoing_bal")
+          .is("finalized_at", null)
+          .is("removed_at", null),
+      ]);
 
-    setItems(merged);
-    setLoading(false);
+      const txTotals = {};
+      (txRows || []).forEach(({ inventory_id, incoming_bal, outgoing_bal }) => {
+        if (!txTotals[inventory_id]) txTotals[inventory_id] = { incoming: 0, outgoing: 0 };
+        txTotals[inventory_id].incoming += toNum(incoming_bal);
+        txTotals[inventory_id].outgoing += toNum(outgoing_bal);
+      });
+
+      const merged = (invRows || []).map((row) => {
+        const tx = txTotals[row.id] ?? { incoming: 0, outgoing: 0 };
+        const beg_bal = toNum(row.beg_bal);
+        const incoming_bal = toNum(row.incoming_bal) + tx.incoming;
+        const outgoing_bal = toNum(row.outgoing_bal) + tx.outgoing;
+        const current_bal = beg_bal + incoming_bal - outgoing_bal;
+        const actual_bal = toNum(row.actual_bal);
+        // Signed variance: negative = shortage, positive = surplus.
+        const variance = actual_bal - current_bal;
+
+        const fk = row[tabCfg.fk];
+        const s = fk != null ? staticById.get(fk) : null;
+
+        return {
+          id: row.id,
+          name: row.name,
+          category_id: s?.category_name ?? null,
+          warehouse: row.warehouse ?? null,
+          beg_bal,
+          incoming_bal,
+          outgoing_bal,
+          current_bal,
+          actual_bal,
+          variance,
+          low_stock_value: toNum(s?.low_stock_value, DEFAULT_LOW_STOCK_VALUE),
+          _discontinued: !!s?.discontinued,
+        };
+      });
+
+      setItems(merged);
+    } catch (e) {
+      console.error("[Dashboard] loadData failed:", e);
+      setItems([]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   function printPage() {
@@ -230,7 +383,7 @@ export default function InventoryPage() {
     totalItems: filteredItems.length,
     stock:  filteredItems.reduce((a, b) => a + Number(b.current_bal), 0),
     actual: filteredItems.reduce((a, b) => a + Number(b.actual_bal),  0),
-    loss:   filteredItems.reduce((a, b) => a + Number(b.loss),        0),
+    loss:   filteredItems.reduce((a, b) => a + Math.max(0, -Number(b.variance)), 0),
   }), [filteredItems]);
 
   const outOfStock = useMemo(
@@ -238,27 +391,38 @@ export default function InventoryPage() {
     [filteredItems]
   );
 
+  // Low stock now references each product's own low_stock_value (set on
+  // the Products page) instead of one hardcoded number for every item.
   const lowStock = useMemo(
-    () => filteredItems.filter((i) => Number(i.current_bal) > 0 && Number(i.current_bal) < LOW_STOCK_THRESHOLD),
+    () => filteredItems.filter((i) => {
+      const threshold = Number(i.low_stock_value ?? DEFAULT_LOW_STOCK_VALUE);
+      return Number(i.current_bal) > 0 && Number(i.current_bal) < threshold;
+    }),
     [filteredItems]
   );
 
   const priorityList = useMemo(() => {
-    const out = [...outOfStock].sort((a, b) => a.name.localeCompare(b.name)).map((i) => ({ ...i, severity: "out" }));
     const low = [...lowStock].sort((a, b) => a.name.localeCompare(b.name)).map((i) => ({ ...i, severity: "low" }));
-    return [...out, ...low];
+    const out = [...outOfStock].sort((a, b) => a.name.localeCompare(b.name)).map((i) => ({ ...i, severity: "out" }));
+    return [...low, ...out];
   }, [outOfStock, lowStock]);
 
   const hasAlerts = priorityList.length > 0;
 
   const chartData = useMemo(
     () => filteredItems.map((i) => ({
-      name:  i.name,
-      stock: Number(i.current_bal),
-      loss:  Number(i.loss),
+      name: i.name,
+      variance: Number.isFinite(i.variance) ? Number(i.variance) : 0,
     })),
     [filteredItems]
   );
+
+  // Symmetric axis ceiling so shortage (left) and surplus (right) bars
+  // both have equal room to diverge from the zero center line.
+  const chartMax = useMemo(() => {
+    const maxAbs = chartData.reduce((m, d) => Math.max(m, Math.abs(d.variance)), 0);
+    return Math.max(5, Math.ceil(maxAbs * 1.15));
+  }, [chartData]);
 
   // Subtitle / footer label for active warehouse filter
   const warehouseLabel = warehouseFilter.length === 0
@@ -344,6 +508,13 @@ export default function InventoryPage() {
             selected={warehouseFilter}
             onChange={setWarehouseFilter}
           />
+
+          {!date && (
+            <span className="ml-auto inline-flex items-center gap-1.5 text-xs text-gray-400">
+              <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block animate-pulse" />
+              Live
+            </span>
+          )}
         </div>
 
         {/* KPI cards */}
@@ -385,7 +556,9 @@ export default function InventoryPage() {
                   <span className={`text-xs font-semibold px-2 py-0.5 rounded-md ${
                     i.severity === "out" ? "bg-red-50 text-red-700" : "bg-amber-50 text-amber-700"
                   }`}>
-                    {i.severity === "out" ? "0 units — out" : `${i.current_bal} units — low`}
+                    {i.severity === "out"
+                      ? "0 units — out"
+                      : `${i.current_bal} units — low (< ${Number(i.low_stock_value ?? DEFAULT_LOW_STOCK_VALUE)})`}
                   </span>
                 </li>
               ))}
@@ -410,14 +583,14 @@ export default function InventoryPage() {
                 ▼
               </span>
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 group-hover:text-gray-700">
-                Stock vs. loss by item
+                Actual vs. current variance by item
               </h2>
             </span>
-            <div className="flex items-center gap-3 text-xs text-gray-400">
+            <div className="flex flex-wrap items-center gap-3 text-xs text-gray-400">
               {!chartCollapsed && (
                 <>
-                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-green-600" /> stock</span>
-                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-red-600" /> loss</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-red-600" /> shortage</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-green-600" /> surplus</span>
                 </>
               )}
               <span className="text-gray-300">{chartCollapsed ? "Show" : "Hide"}</span>
@@ -425,20 +598,41 @@ export default function InventoryPage() {
           </button>
           {!chartCollapsed && (
             <ResponsiveContainer width="100%" height={Math.max(260, chartData.length * 32)}>
-              <ComposedChart data={chartData} layout="vertical" margin={{ left: 10, right: 16 }}>
+              <ComposedChart data={chartData} layout="vertical" margin={{ left: 10, right: 24 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" horizontal={false} />
-                <XAxis type="number" tick={{ fontSize: 11, fill: "#9CA3AF" }} axisLine={false} tickLine={false} />
+                <XAxis
+                  type="number"
+                  domain={[-chartMax, chartMax]}
+                  tick={{ fontSize: 11, fill: "#9CA3AF" }}
+                  axisLine={false}
+                  tickLine={false}
+                  allowDecimals={false}
+                />
                 <YAxis
                   type="category"
                   dataKey="name"
-                  tick={{ fontSize: 11, fill: "#9CA3AF" }}
+                  tick={{ fontSize: 11, fill: "#000000" }}
                   axisLine={{ stroke: "#E5E7EB" }}
                   tickLine={false}
                   width={120}
                 />
-                <Tooltip contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }} />
-                <Bar dataKey="stock" fill="#16A34A" radius={[0, 3, 3, 0]} />
-                <Bar dataKey="loss"  fill="#DC2626" radius={[0, 3, 3, 0]} />
+                <ReferenceLine x={0} stroke="#D1D5DB" />
+                <Tooltip
+                  cursor={{ fill: "#F9FAFB" }}
+                  contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }}
+                  formatter={(value) => [value > 0 ? `+${value}` : value, "Variance"]}
+                />
+                <Bar
+                  dataKey="variance"
+                  name="Variance"
+                  radius={[3, 3, 3, 3]}
+                  barSize={14}
+                  isAnimationActive={false}
+                >
+                  {chartData.map((entry, idx) => (
+                    <Cell key={`cell-${idx}`} fill={varianceColor(entry.variance)} />
+                  ))}
+                </Bar>
               </ComposedChart>
             </ResponsiveContainer>
           )}
@@ -464,7 +658,7 @@ export default function InventoryPage() {
                   <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Outgoing</th>
                   <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Current</th>
                   <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Actual</th>
-                  <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Loss</th>
+                  <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wide text-gray-500">Variance</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
@@ -476,8 +670,9 @@ export default function InventoryPage() {
                   </tr>
                 )}
                 {filteredItems.map((i) => {
+                  const threshold = Number(i.low_stock_value ?? DEFAULT_LOW_STOCK_VALUE);
                   const isOut = Number(i.current_bal) === 0;
-                  const isLow = Number(i.current_bal) > 0 && Number(i.current_bal) < LOW_STOCK_THRESHOLD;
+                  const isLow = Number(i.current_bal) > 0 && Number(i.current_bal) < threshold;
                   return (
                     <tr key={i.id} className={`transition-colors hover:bg-gray-50 ${isOut ? "bg-red-50/60" : isLow ? "bg-amber-50/60" : ""}`}>
                       <td className="px-4 py-3 flex items-center gap-2 font-medium text-gray-900">
@@ -502,14 +697,30 @@ export default function InventoryPage() {
                         {i.outgoing_bal > 0 ? `-${i.outgoing_bal}` : i.outgoing_bal}
                       </td>
                       <td className="px-4 py-3 text-center">
-                        <span className={`inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-semibold ${
-                          isOut ? "bg-red-100 text-red-700" : isLow ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-700"
-                        }`}>
+                        <span
+                          className={`inline-flex items-center rounded-md px-2.5 py-0.5 text-xs font-semibold ${
+                            isOut ? "bg-red-100 text-red-700" : isLow ? "bg-amber-100 text-amber-700" : "bg-gray-100 text-gray-700"
+                          }`}
+                          title={isLow ? `Below low stock threshold (${threshold})` : undefined}
+                        >
                           {i.current_bal}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-center text-gray-600">{i.actual_bal}</td>
-                      <td className="px-4 py-3 text-center font-semibold text-red-500">{i.loss}</td>
+                      <td className="px-4 py-3 text-center">
+                        {(() => {
+                          const v = Number.isFinite(i.variance) ? i.variance : 0;
+                          return (
+                            <span
+                              className={`font-semibold ${
+                                v < 0 ? "text-red-500" : v > 0 ? "text-green-600" : "text-gray-400"
+                              }`}
+                            >
+                              {v > 0 ? `+${v}` : v}
+                            </span>
+                          );
+                        })()}
+                      </td>
                     </tr>
                   );
                 })}

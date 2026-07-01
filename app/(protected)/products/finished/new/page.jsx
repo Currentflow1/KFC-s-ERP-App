@@ -106,6 +106,7 @@ export default function NewFinishedProduct() {
     name: "",
     category_name: "",
     discontinued: false,
+    low_stock_value: 10,
   });
   const [warehouses, setWarehouses] = useState([]);
 
@@ -118,7 +119,10 @@ export default function NewFinishedProduct() {
 
   function handleChange(e) {
     const { name, value, type, checked } = e.target;
-    setForm({ ...form, [name]: type === "checkbox" ? checked : value });
+    setForm({
+      ...form,
+      [name]: type === "checkbox" ? checked : type === "number" ? (value === "" ? "" : Number(value)) : value,
+    });
   }
 
   async function submit() {
@@ -126,7 +130,12 @@ export default function NewFinishedProduct() {
 
     const { data: inserted, error } = await supabase
       .from("finished_products_static")
-      .insert([{ name: form.name, category_name: form.category_name, discontinued: form.discontinued }])
+      .insert([{
+        name: form.name,
+        category_name: form.category_name,
+        discontinued: form.discontinued,
+        low_stock_value: form.low_stock_value,
+      }])
       .select("id")
       .single();
 
@@ -156,6 +165,19 @@ export default function NewFinishedProduct() {
           <div>
             <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">Warehouses</label>
             <WarehouseInput warehouses={warehouses} onChange={setWarehouses} />
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium text-gray-500 uppercase tracking-wide mb-1.5">Low Stock Value</label>
+            <input
+              type="number"
+              name="low_stock_value"
+              min="0"
+              value={form.low_stock_value}
+              onChange={handleChange}
+              placeholder="10"
+              className="text-black w-full border rounded-lg p-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
           </div>
 
           <label className="text-black flex items-center space-x-2 text-sm">
