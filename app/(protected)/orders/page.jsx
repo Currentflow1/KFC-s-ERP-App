@@ -452,6 +452,11 @@ export default function OrderTable() {
     });
   }
 
+  // FIX #2: previously this silently took data[0] if multiple inventory
+  // rows matched the same product name + warehouse (the schema has no
+  // unique constraint on that pair). That could attach an order to the
+  // wrong physical row and desync balances everywhere downstream. Now it
+  // fails loudly instead of guessing.
   async function resolveInventoryId(productName, warehouse) {
     const { data, error } = await supabase
       .from(invTableName)
@@ -459,8 +464,64 @@ export default function OrderTable() {
       .eq("name", productName)
       .eq("warehouse", warehouse);
     if (error) throw new Error(`Inventory lookup failed: ${error.message}`);
-    if (!data || data.length === 0) throw new Error(`No inventory row found for "${productName}" in warehouse "${warehouse}".`);
+    if (!data || data.length === 0) {
+      throw new Error(`No inventory row found for "${productName}" in warehouse "${warehouse}".`);
+    }
+    if (data.length > 1) {
+      throw new Error(
+        `Found ${data.length} inventory rows for "${productName}" in warehouse "${warehouse}". ` +
+        `This is a data problem — please ask an admin to remove the duplicate row before ordering this item.`
+      );
+    }
     return data[0].id;
+  }
+
+  // FIX #1: live stock check for outgoing orders. Mirrors the exact
+  // formula InventoryPage.js uses for current_bal — beg_bal plus stored +
+  // pending incoming, minus stored + pending outgoing — so "available"
+  // here always matches what the Inventory page will show.
+  async function getAvailableStock(inventoryId, excludeTxId = null) {
+    const { data: invRow, error: invErr } = await supabase
+      .from(invTableName)
+      .select("beg_bal, incoming_bal, outgoing_bal")
+      .eq("id", inventoryId)
+      .maybeSingle();
+    if (invErr) throw new Error(`Stock check failed: ${invErr.message}`);
+    if (!invRow) throw new Error("Stock check failed: inventory row not found.");
+
+    const { data: pendingRows, error: pendErr } = await supabase
+      .from(txTableName)
+      .select("id, incoming_bal, outgoing_bal")
+      .eq("inventory_id", inventoryId)
+      .is("finalized_at", null)
+      .is("removed_at", null);
+    if (pendErr) throw new Error(`Stock check failed: ${pendErr.message}`);
+
+    const pending = (pendingRows ?? [])
+      .filter((r) => r.id !== excludeTxId)
+      .reduce(
+        (acc, r) => {
+          acc.incoming += Number(r.incoming_bal ?? 0);
+          acc.outgoing += Number(r.outgoing_bal ?? 0);
+          return acc;
+        },
+        { incoming: 0, outgoing: 0 }
+      );
+
+    const beg      = Number(invRow.beg_bal ?? 0);
+    const incoming = Number(invRow.incoming_bal ?? 0) + pending.incoming;
+    const outgoing = Number(invRow.outgoing_bal ?? 0) + pending.outgoing;
+    return beg + incoming - outgoing;
+  }
+
+  async function confirmOutgoingWithinStock(inventoryId, qty, productName, excludeTxId = null) {
+    const available = await getAvailableStock(inventoryId, excludeTxId);
+    if (qty <= available) return true;
+    const shortfall = qty - available;
+    return window.confirm(
+      `⚠️ "${productName}" only has ${available} available, but this order requests ${qty} ` +
+      `(${shortfall} short).\n\nThis will push the balance negative once finalized. Proceed anyway?`
+    );
   }
 
   // ── ADD ───────────────────────────────────────────────────────────────────
@@ -481,6 +542,12 @@ export default function OrderTable() {
     setSaving(true);
     try {
       const inventory_id = await resolveInventoryId(formData.product_name, formData.warehouse);
+
+      if (!isIncoming) {
+        const ok = await confirmOutgoingWithinStock(inventory_id, qty, formData.product_name);
+        if (!ok) { setSaving(false); return; }
+      }
+
       const payload = {
         inventory_id,
         monitoring_employee:      formData.monitoring_employee,
@@ -516,6 +583,15 @@ export default function OrderTable() {
     setSaving(true);
     try {
       const newInventoryId = await resolveInventoryId(editData.product_name, editData.warehouse);
+      const newOutgoingQty = Number(editData.outgoing_bal ?? 0);
+
+      if (newOutgoingQty > 0) {
+        // Exclude this row's own current pending amount from the
+        // availability calc — otherwise it would double-count itself.
+        const ok = await confirmOutgoingWithinStock(newInventoryId, newOutgoingQty, editData.product_name, id);
+        if (!ok) { setSaving(false); return; }
+      }
+
       const updatePayload = {
         inventory_id:             newInventoryId,
         monitoring_employee:      editData.monitoring_employee,
@@ -524,7 +600,7 @@ export default function OrderTable() {
         product_name:             editData.product_name,
         warehouse:                editData.warehouse,
         incoming_bal:             Number(editData.incoming_bal ?? 0),
-        outgoing_bal:             Number(editData.outgoing_bal ?? 0),
+        outgoing_bal:             newOutgoingQty,
         ...(tabCfg.hasSupplier ? {
           supplier_name: Number(editData.incoming_bal ?? 0) > 0
             ? (editData.supplier_name || null) : null,

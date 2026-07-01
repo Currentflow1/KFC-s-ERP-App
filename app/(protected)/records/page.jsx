@@ -64,7 +64,7 @@ function fmtDateTimeCSV(val) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-// ─── tab → table mapping (Finished / Raw / Packaging) ─────────────────────────
+// ─── tab → table mapping (Raw / Finished / Packaging) ─────────────────────────
 
 function historyTable(tab) {
   if (tab === "raw")       return "raw_materials_inventory_history";
@@ -526,7 +526,8 @@ function TxStatusBadge({ row }) {
 export default function RecordsPage() {
   const supabase = createClient();
 
-  const [tab,    setTab]    = useState("finished");
+  // Raw is now the default landing tab (was "finished").
+  const [tab,    setTab]    = useState("raw");
   const [period, setPeriod] = useState("weekly");
 
   const [dateFrom, setDateFrom] = useState("");
@@ -556,7 +557,7 @@ export default function RecordsPage() {
   const [txPage,   setTxPage]   = useState(1);
   const PAGE = 20;
 
-  const tabRef = useRef("finished");
+  const tabRef = useRef("raw");
   tabRef.current = tab;
 
   // ── warehouse map ─────────────────────────────────────────────────────────
@@ -729,13 +730,13 @@ export default function RecordsPage() {
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
-          <button onClick={() => setTab("finished")}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${tab === "finished" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
-            Finished
-          </button>
           <button onClick={() => setTab("raw")}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${tab === "raw" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
             Raw
+          </button>
+          <button onClick={() => setTab("finished")}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "finished" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
+            Finished
           </button>
           <button onClick={() => setTab("packaging")}
             className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${tab === "packaging" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>

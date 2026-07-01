@@ -55,7 +55,10 @@ const TAB_CONFIG = {
     label: "Packaging",
   },
 };
-const TAB_ORDER = ["finished", "raw", "packaging"];
+// Raw is now first / the priority tab — this drives both the button order
+// below and, combined with the useState/boot changes further down, which
+// tab loads first when the page opens.
+const TAB_ORDER = ["raw", "finished", "packaging"];
 
 // Fallback used only if a row's static record is missing/unreachable —
 // mirrors the DB column default so behavior degrades gracefully.
@@ -151,7 +154,8 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
 export default function InventoryPage() {
   const supabase = createClient();
 
-  const [tab, setTab] = useState("finished");
+  // Raw is now the default landing tab.
+  const [tab, setTab] = useState("raw");
   const [date, setDate] = useState("");
 
   const [items, setItems] = useState([]);
@@ -170,7 +174,7 @@ export default function InventoryPage() {
   const [availableWarehouses, setAvailableWarehouses] = useState([]);
   const [search, setSearch] = useState("");
 
-  const tabRef = useRef("finished");
+  const tabRef = useRef("raw");
   const dateRef = useRef("");
   tabRef.current = tab;
   dateRef.current = date;
@@ -432,7 +436,10 @@ export default function InventoryPage() {
   // ─── boot ─────────────────────────────────────────────────────────────────
 
   useEffect(() => {
-    const t = "finished";
+    // Boot with Raw as the primary tab (matches tab/tabRef default above);
+    // Finished + Packaging get prewarmed in the background below so they
+    // still open instantly once the user switches to them.
+    const t = "raw";
     async function boot() {
       await resetDailyIfNeeded();
       await evictStaleQueueEntries();
@@ -446,7 +453,7 @@ export default function InventoryPage() {
       ]);
       setBooted(true);
       if (isOnline()) {
-        prewarmOtherTab("raw");
+        prewarmOtherTab("finished");
         prewarmOtherTab("packaging");
       }
     }

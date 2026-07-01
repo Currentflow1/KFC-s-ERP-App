@@ -11,10 +11,13 @@ const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employ
 
 // packaging_transaction_log has the same columns as raw_materials_transaction_log
 // (including supplier_name), so it reuses RAW_SELECT.
+// `inv` / `hist` point to the same inventory tables InventoryPage.js reads,
+// so this table can anchor its running balance to InventoryPage's real
+// checkpoints instead of drifting from a from-scratch sum.
 const TX_CONFIG = {
-  raw:       { table: "raw_materials_transaction_log",     select: RAW_SELECT, hasSupplier: true,  label: "Raw Materials" },
-  finished:  { table: "finished_products_transaction_log", select: FIN_SELECT, hasSupplier: false, label: "Finished Products" },
-  packaging: { table: "packaging_transaction_log",         select: RAW_SELECT, hasSupplier: true,  label: "Packaging" },
+  raw:       { table: "raw_materials_transaction_log",     select: RAW_SELECT, hasSupplier: true,  label: "Raw Materials",     inv: "raw_materials_inventory",     hist: "raw_materials_inventory_history" },
+  finished:  { table: "finished_products_transaction_log", select: FIN_SELECT, hasSupplier: false, label: "Finished Products", inv: "finished_products_inventory", hist: "finished_products_inventory_history" },
+  packaging: { table: "packaging_transaction_log",         select: RAW_SELECT, hasSupplier: true,  label: "Packaging",         inv: "packaging_inventory",         hist: "packaging_inventory_history" },
 };
 
 function pad(n) { return n.toString().padStart(2, "0"); }
@@ -67,7 +70,7 @@ export default function TransactionLogsTable() {
   const fetchLogs = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const { table, select } = TX_CONFIG[productType] ?? TX_CONFIG.finished;
+    const { table, select, inv, hist } = TX_CONFIG[productType] ?? TX_CONFIG.finished;
     try {
       const { data, error: fetchError } = await supabase
         .from(table)
@@ -87,17 +90,54 @@ export default function TransactionLogsTable() {
         emailById = Object.fromEntries((profileRows ?? []).map((p) => [p.id, p.email]));
       }
 
-      // Running balance per product — only active rows (not removed) count.
-      // A deleted, undone, or finalize-reverted row never actually moved
-      // inventory going forward, so including it would corrupt
-      // balance_before/balance_after for every row after it.
-      const runningBalance = {};
+      // Pull the checkpoints InventoryPage.js actually trusts:
+      // - liveBegById: the current beg_bal on the live inventory row
+      //   (this is what "today"/pending balances are anchored to)
+      // - histBegByKey: the beg_bal stored per inventory_id + inventory_date
+      //   in the *_inventory_history table (what a finalized day started at)
+      // A pure running sum from zero never reflects the fact that Finalize
+      // resets beg_bal to actual_bal, so any day with a count-correction
+      // loss/gain permanently desyncs a from-scratch total from Inventory's
+      // number. Re-anchoring here keeps the two views identical.
+      const [{ data: invRows }, { data: histRows }] = await Promise.all([
+        supabase.from(inv).select("id, beg_bal"),
+        supabase.from(hist).select("inventory_id, inventory_date, beg_bal"),
+      ]);
+      const liveBegById = Object.fromEntries(
+        (invRows ?? []).map((r) => [r.id, Number(r.beg_bal ?? 0)])
+      );
+      const histBegByKey = {};
+      (histRows ?? []).forEach((r) => {
+        histBegByKey[`${r.inventory_id}_${r.inventory_date}`] = Number(r.beg_bal ?? 0);
+      });
+
+      // Running balance is now tracked per inventory_id (a specific
+      // product+warehouse row) instead of per product_name, so two
+      // warehouses holding the same product no longer share one total.
+      // `period` is either a finalized calendar date, or "PENDING" for
+      // rows not yet rolled forward — all still-pending rows for a given
+      // inventory_id share one live period regardless of which calendar
+      // day they were created on, matching how Inventory computes
+      // current_bal (beg_bal + all unfinalized tx, unconditionally).
+      const periodState = {}; // inventory_id -> { period, balance }
       const enriched = (data ?? []).map((row) => {
-        const product   = row.product_name;
+        const invId     = row.inventory_id;
         const isRemoved = !!row.removed_at;
-        const before     = runningBalance[product] ?? 0;
+        const period     = row.finalized_at ? toDateString(new Date(row.finalized_at)) : "PENDING";
+
+        let state = periodState[invId];
+        if (!state || state.period !== period) {
+          const anchor =
+            period === "PENDING"
+              ? (liveBegById[invId] ?? 0)
+              : (histBegByKey[`${invId}_${period}`] ?? liveBegById[invId] ?? 0);
+          state = { period, balance: anchor };
+        }
+
+        const before = state.balance;
 
         if (isRemoved) {
+          periodState[invId] = state;
           return {
             ...row,
             balance_before:    before,
@@ -108,7 +148,8 @@ export default function TransactionLogsTable() {
 
         const delta = (row.incoming_bal ?? 0) - (row.outgoing_bal ?? 0);
         const after = before + delta;
-        runningBalance[product] = after;
+        periodState[invId] = { period, balance: after };
+
         return {
           ...row,
           balance_before:    before,

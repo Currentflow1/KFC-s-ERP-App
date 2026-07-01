@@ -31,17 +31,8 @@ function toNum(value, fallback = 0) {
 // ─── Tab config ───────────────────────────────────────────────────────────
 // Single source of truth for which tables/labels each tab uses, mirroring
 // the pattern in InventoryPage / TransactionLogsTable so all three tabs
-// (finished, raw, packaging) stay in sync going forward.
+// (raw, finished, packaging) stay in sync going forward.
 const TAB_CONFIG = {
-  finished: {
-    label: "Finished Products",
-    static: "finished_products_static",
-    inv: "finished_products_inventory",
-    hist: "finished_products_inventory_history",
-    wh: "finished_products_warehouses",
-    tx: "finished_products_transaction_log",
-    fk: "finished_product_id",
-  },
   raw: {
     label: "Raw Materials",
     static: "raw_materials_static",
@@ -50,6 +41,15 @@ const TAB_CONFIG = {
     wh: "raw_materials_warehouses",
     tx: "raw_materials_transaction_log",
     fk: "raw_material_id",
+  },
+  finished: {
+    label: "Finished Products",
+    static: "finished_products_static",
+    inv: "finished_products_inventory",
+    hist: "finished_products_inventory_history",
+    wh: "finished_products_warehouses",
+    tx: "finished_products_transaction_log",
+    fk: "finished_product_id",
   },
   packaging: {
     label: "Packaging",
@@ -61,7 +61,8 @@ const TAB_CONFIG = {
     fk: "packaging_id",
   },
 };
-const TAB_ORDER = ["finished", "raw", "packaging"];
+// Raw is now first / the priority tab.
+const TAB_ORDER = ["raw", "finished", "packaging"];
 
 function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
 
@@ -148,7 +149,8 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
 export default function InventoryPage() {
   const supabase = useMemo(() => createClient(), []);
 
-  const [tab, setTab]                     = useState("finished");
+  // Raw is now the default landing tab (was "finished").
+  const [tab, setTab]                     = useState("raw");
   const [items, setItems]                 = useState([]);
   const [date, setDate]                   = useState("");
   const [loading, setLoading]             = useState(false);

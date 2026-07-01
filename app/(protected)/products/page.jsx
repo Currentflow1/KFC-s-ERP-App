@@ -5,7 +5,8 @@ import { createClient } from "@/lib/supabaseClient";
 import Link from "next/link";
 
 export default function ProductsPage() {
-  const [tab, setTab] = useState("finished");
+  // Raw is now the default landing tab (was "finished").
+  const [tab, setTab] = useState("raw");
   const [finished, setFinished] = useState([]);
   const [raw, setRaw] = useState([]);
   const [packaging, setPackaging] = useState([]);
@@ -275,13 +276,13 @@ export default function ProductsPage() {
 
       <div className="flex items-center gap-3 mb-5 p-3 bg-white border border-gray-200 rounded-lg shadow-sm">
         <div className="flex gap-1">
-          <button onClick={() => handleTabChange("finished")}
-            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${tab === "finished" ? "bg-blue-600 text-white" : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"}`}>
-            Finished Products
-          </button>
           <button onClick={() => handleTabChange("raw")}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${tab === "raw" ? "bg-blue-600 text-white" : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"}`}>
             Raw Materials
+          </button>
+          <button onClick={() => handleTabChange("finished")}
+            className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${tab === "finished" ? "bg-blue-600 text-white" : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"}`}>
+            Finished Products
           </button>
           <button onClick={() => handleTabChange("packaging")}
             className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${tab === "packaging" ? "bg-blue-600 text-white" : "text-gray-600 hover:text-gray-900 hover:bg-gray-100"}`}>
