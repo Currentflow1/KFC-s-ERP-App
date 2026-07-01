@@ -8,6 +8,7 @@ import {
   setCache,
   getCache,
   patchInventorySnapshot,
+  sanitizeInventoryRow,
 } from "@/lib/sync";
 
 // ─── Tab config (mirrors InventoryPage) ──────────────────────────────────────
@@ -316,9 +317,21 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         outgoing        = Number(data.outgoing_bal  ?? 0);
         existing_actual = data.actual_bal != null ? Number(data.actual_bal) : null;
       } else {
-        beg             = Number(item.beg_bal      ?? 0);
-        incoming        = Number(item.incoming_bal  ?? 0);
-        outgoing        = Number(item.outgoing_bal  ?? 0);
+        // `item` here is the merged/display row from InventoryPage.loadData(),
+        // which already folds in still-pending (unfinalized) transaction
+        // totals via _pendingIncoming/_pendingOutgoing so the UI shows the
+        // "live" balance. Those pending amounts are NOT yet written to the
+        // raw inventory columns — they only get committed at Finalize.
+        // Using item.incoming_bal / item.outgoing_bal directly here would
+        // double-count them: once now (queued write) and again later when
+        // Finalize adds the still-pending tx rows on top. sanitizeInventoryRow
+        // strips the pending overlay back out so the queued write reflects
+        // the true stored column values, matching what the online branch
+        // reads directly from Supabase.
+        const raw = sanitizeInventoryRow(item);
+        beg             = raw.beg_bal;
+        incoming        = raw.incoming_bal;
+        outgoing        = raw.outgoing_bal;
         existing_actual = item.actual_bal != null ? Number(item.actual_bal) : null;
       }
 
@@ -387,10 +400,17 @@ export default function ManipulatePanel({ item, tab, onClose, onUpdated, onLocal
         outgoing_bal = Number(data.outgoing_bal  ?? 0);
         current_bal  = Number(data.current_bal   ?? 0);
       } else {
-        beg_bal      = Number(item.beg_bal      ?? 0);
-        incoming_bal = Number(item.incoming_bal  ?? 0);
-        outgoing_bal = Number(item.outgoing_bal  ?? 0);
-        current_bal  = Number(item.current_bal   ?? 0);
+        // Same reasoning as applyChange()'s offline branch above: `item`'s
+        // balance fields are display-merged with still-pending transaction
+        // totals. Strip that overlay via sanitizeInventoryRow before queuing
+        // the write, or the pending amount gets committed here AND again at
+        // Finalize — producing doubled/incorrect inventory values while the
+        // transaction log (untouched by this write) stays correct.
+        const raw = sanitizeInventoryRow(item);
+        beg_bal      = raw.beg_bal;
+        incoming_bal = raw.incoming_bal;
+        outgoing_bal = raw.outgoing_bal;
+        current_bal  = raw.current_bal;
       }
 
       const loss       = Math.max(0, current_bal - a);

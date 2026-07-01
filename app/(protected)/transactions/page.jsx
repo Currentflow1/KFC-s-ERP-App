@@ -123,7 +123,31 @@ export default function TransactionLogsTable() {
       const enriched = (data ?? []).map((row) => {
         const invId     = row.inventory_id;
         const isRemoved = !!row.removed_at;
-        const period     = row.finalized_at ? toDateString(new Date(row.finalized_at)) : "PENDING";
+
+        // A row's finalized_at alone does NOT mean it belongs to a *closed*
+        // historical day. Manipulations (stock movements + count
+        // corrections from ManipulatePanel) get finalized_at stamped at
+        // insert time — see buildTxPayload's `finalized_at: new Date()...`
+        // — well before that calendar day is ever actually rolled forward
+        // via "Finalize day". Ordered transactions, meanwhile, stay
+        // finalized_at: null (period "PENDING") until Finalize runs.
+        //
+        // The only thing that genuinely closes a day is runFinalize()
+        // writing a row into *_inventory_history for that date. So we only
+        // trust finalized_at as marking a real closed period when a
+        // matching history row actually exists for it; otherwise the row
+        // is still part of today's open book and belongs in the same
+        // running-balance thread as PENDING rows — matching how
+        // InventoryPage.js's current_bal combines the committed columns
+        // (which manipulations write straight into) with all unfinalized
+        // pending tx as ONE number. Without this, a manipulation
+        // interleaved with pending orders on the same still-open day
+        // silently forks off its own disconnected period, anchors back to
+        // liveBegById, and the log's balance_after drifts from what
+        // Inventory actually displays.
+        const finalizedDate  = row.finalized_at ? toDateString(new Date(row.finalized_at)) : null;
+        const isClosedPeriod = finalizedDate != null && histBegByKey[`${invId}_${finalizedDate}`] !== undefined;
+        const period          = isClosedPeriod ? finalizedDate : "PENDING";
 
         let state = periodState[invId];
         if (!state || state.period !== period) {
