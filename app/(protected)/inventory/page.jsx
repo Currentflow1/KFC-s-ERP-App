@@ -297,9 +297,14 @@ export default function InventoryPage() {
         // not the loss value stored on the row. The stored value is only
         // ever as fresh as the last actual count or finalize, so it goes
         // stale the moment a new pending order shifts current_bal. Recompute
-        // it here instead of trusting row.loss, so "current - actual" always
+        // it here instead of trusting row.loss, so "actual - current" always
         // matches what's actually displayed, even while pending.
-        const loss = Math.max(0, current_bal - actual_bal);
+        //
+        // SIGNED convention (matches Records page + Transaction Logs):
+        //   loss < 0  -> deficit / shortage  (actual < current)
+        //   loss > 0  -> surplus             (actual > current)
+        //   loss = 0  -> no discrepancy
+        const loss = actual_bal - current_bal;
 
         const productId = row[fk];
         const staticId = productId ?? liveId;
@@ -499,8 +504,8 @@ export default function InventoryPage() {
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tx.outgoing;
         const current_bal = beg_bal + incoming_bal - outgoing_bal;
         // Same live recompute as loadData — see comment there for why we
-        // don't just read row.loss.
-        const loss = Math.max(0, current_bal - actual_bal);
+        // don't just read row.loss. Signed convention (actual - current).
+        const loss = actual_bal - current_bal;
         const productId = row[fk];
         const staticId = productId ?? row.id;
         return {
@@ -617,8 +622,9 @@ export default function InventoryPage() {
           // Recompute live, same as loadData/prewarmOtherTab, instead of
           // trusting s.loss (the snapshot's stored loss), which predates
           // whatever pending tx is still layered back on top here.
+          // Signed convention (actual - current).
           const actual_bal = s.actual_bal;
-          const loss = Math.max(0, current_bal - actual_bal);
+          const loss = actual_bal - current_bal;
           return {
             ...item,
             beg_bal: s.beg_bal,
@@ -926,7 +932,12 @@ export default function InventoryPage() {
         const outgoing_bal = Number(row.outgoing_bal ?? 0) + tt.outgoing;
         const current_bal = Number(row.beg_bal ?? 0) + incoming_bal - outgoing_bal;
         const actual_bal = Number(row.actual_bal ?? current_bal);
-        const loss = Math.max(0, current_bal - actual_bal);
+        // Signed convention (actual - current): negative = shortage,
+        // positive = surplus, zero = no discrepancy. This is the value
+        // that gets persisted into *_inventory and *_inventory_history —
+        // downstream readers (Records page, Transaction Logs) trust this
+        // column directly rather than recomputing.
+        const loss = actual_bal - current_bal;
         return { ...row, incoming_bal, outgoing_bal, current_bal, actual_bal, loss };
       });
 

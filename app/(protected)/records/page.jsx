@@ -32,7 +32,9 @@ function fmt(n) { return Number(n ?? 0).toLocaleString(); }
 function raw(n) { return Number(n ?? 0); }
 
 // Renders the "Loss" cell.
-// loss is computed as (actual_bal - current_bal):
+// loss is a SIGNED value stored directly on the row (actual_bal - current_bal),
+// written consistently by InventoryPage.js's loadData / prewarmOtherTab /
+// undoItemChange / runFinalize. Same convention everywhere:
 // loss < 0  -> deficit (actual < current) -> red, shown with its negative sign
 // loss > 0  -> surplus (actual > current) -> green, prefixed with "+"
 // loss = 0  -> dash
@@ -864,7 +866,16 @@ export default function RecordsPage() {
                           <td className="px-4 py-2.5 text-black font-semibold">{fmt(row.current_bal)}</td>
                           <td className="px-4 py-2.5 text-black">{fmt(row.actual_bal)}</td>
                           <td className="px-4 py-2.5">
-                            {renderLoss(raw(row.actual_bal) - raw(row.current_bal))}
+                            {/*
+                              Now trusts the stored `row.loss` column directly
+                              instead of recomputing actual_bal - current_bal
+                              here. This is safe because InventoryPage.js's
+                              runFinalize now writes loss using the exact same
+                              signed convention (actual - current) that
+                              renderLoss expects, so the stored value and the
+                              on-the-fly recompute are guaranteed to agree.
+                            */}
+                            {renderLoss(row.loss)}
                           </td>
                           <td className="px-4 py-2.5 text-black whitespace-nowrap">{row._warehouse}</td>
                           <td className="px-4 py-2.5 text-black whitespace-nowrap text-xs">{fmtDateTime(row.created_at)}</td>
@@ -995,6 +1006,12 @@ export default function RecordsPage() {
                               {row.actual_bal != null ? fmt(row.actual_bal) : <span className="text-gray-300">—</span>}
                             </td>
                             <td className="px-4 py-2.5">
+                              {/*
+                                Same signed convention as the Finalized History
+                                column above and as TransactionLogsTable.js —
+                                row.loss < 0 -> shortage (red), > 0 -> surplus
+                                (green), 0 -> dash.
+                              */}
                               {renderLoss(row.loss, dimClass)}
                             </td>
                             <td className={`px-4 py-2.5 text-black ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>

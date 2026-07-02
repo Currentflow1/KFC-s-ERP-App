@@ -546,15 +546,29 @@ export default function TransactionLogsTable() {
                         )}
                       </td>
 
-                      {/* Loss */}
+                      {/*
+                        Loss — SIGNED convention, matching InventoryPage.js
+                        (actual_bal - current_bal) and records/page.js's
+                        renderLoss:
+                          loss < 0  -> shortage/deficit -> red
+                          loss > 0  -> surplus           -> green
+                          loss = 0 / null -> dash
+                        Previously this read `row.loss > 0 -> red` which was
+                        the OPPOSITE polarity of the other two files and
+                        would color every real shortage green.
+                      */}
                       <td className="px-4 py-3">
                         {isManipulated && row.loss != null ? (
-                          row.loss > 0 ? (
+                          row.loss < 0 ? (
                             <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-red-50 text-red-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
-                              -{row.loss}
+                              {row.loss}
+                            </span>
+                          ) : row.loss > 0 ? (
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
+                              +{row.loss}
                             </span>
                           ) : (
-                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-green-50 text-green-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md bg-gray-50 text-gray-600 ${isRemoved ? "opacity-50 line-through" : ""}`}>
                               0
                             </span>
                           )
