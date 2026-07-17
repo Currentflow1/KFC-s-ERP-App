@@ -15,9 +15,9 @@ const FIN_SELECT = "id, inventory_id, monitoring_employee, representative_employ
 // so this table can anchor its running balance to InventoryPage's real
 // checkpoints instead of drifting from a from-scratch sum.
 const TX_CONFIG = {
-  raw:       { table: "raw_materials_transaction_log",     select: RAW_SELECT, hasSupplier: true,  label: "Raw Materials",     inv: "raw_materials_inventory",     hist: "raw_materials_inventory_history" },
-  finished:  { table: "finished_products_transaction_log", select: FIN_SELECT, hasSupplier: false, label: "Finished Products", inv: "finished_products_inventory", hist: "finished_products_inventory_history" },
-  packaging: { table: "packaging_transaction_log",         select: RAW_SELECT, hasSupplier: true,  label: "Packaging",         inv: "packaging_inventory",         hist: "packaging_inventory_history" },
+  raw: { table: "raw_materials_transaction_log", select: RAW_SELECT, hasSupplier: true, label: "Raw Materials", inv: "raw_materials_inventory", hist: "raw_materials_inventory_history" },
+  finished: { table: "finished_products_transaction_log", select: FIN_SELECT, hasSupplier: false, label: "Finished Products", inv: "finished_products_inventory", hist: "finished_products_inventory_history" },
+  packaging: { table: "packaging_transaction_log", select: RAW_SELECT, hasSupplier: true, label: "Packaging", inv: "packaging_inventory", hist: "packaging_inventory_history" },
 };
 
 function pad(n) { return n.toString().padStart(2, "0"); }
@@ -26,15 +26,15 @@ function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-$
 export default function TransactionLogsTable() {
   const supabase = useMemo(() => createClient(), []);
 
-  const [productType, setProductType]   = useState(PRODUCT_TYPE.RAW);
-  const [logs, setLogs]                 = useState([]);
-  const [loading, setLoading]           = useState(false);
-  const [error, setError]               = useState(null);
-  const [search, setSearch]             = useState("");
+  const [productType, setProductType] = useState(PRODUCT_TYPE.RAW);
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
   const [selectedDate, setSelectedDate] = useState("");
 
   // ── Top scrollbar sync ───────────────────────────────────────────────────
-  const topScrollRef   = useRef(null);
+  const topScrollRef = useRef(null);
   const tableScrollRef = useRef(null);
   const [tableWidth, setTableWidth] = useState(0);
   const syncingRef = useRef(false);
@@ -121,7 +121,7 @@ export default function TransactionLogsTable() {
       // current_bal (beg_bal + all unfinalized tx, unconditionally).
       const periodState = {}; // inventory_id -> { period, balance }
       const enriched = (data ?? []).map((row) => {
-        const invId     = row.inventory_id;
+        const invId = row.inventory_id;
         const isRemoved = !!row.removed_at;
 
         // A row's finalized_at alone does NOT mean it belongs to a *closed*
@@ -145,9 +145,9 @@ export default function TransactionLogsTable() {
         // silently forks off its own disconnected period, anchors back to
         // liveBegById, and the log's balance_after drifts from what
         // Inventory actually displays.
-        const finalizedDate  = row.finalized_at ? toDateString(new Date(row.finalized_at)) : null;
+        const finalizedDate = row.finalized_at ? toDateString(new Date(row.finalized_at)) : null;
         const isClosedPeriod = finalizedDate != null && histBegByKey[`${invId}_${finalizedDate}`] !== undefined;
-        const period          = isClosedPeriod ? finalizedDate : "PENDING";
+        const period = isClosedPeriod ? finalizedDate : "PENDING";
 
         let state = periodState[invId];
         if (!state || state.period !== period) {
@@ -164,8 +164,8 @@ export default function TransactionLogsTable() {
           periodState[invId] = state;
           return {
             ...row,
-            balance_before:    before,
-            balance_after:     before,
+            balance_before: before,
+            balance_after: before,
             responsible_email: row.created_by ? (emailById[row.created_by] ?? "Unknown account") : null,
           };
         }
@@ -176,8 +176,8 @@ export default function TransactionLogsTable() {
 
         return {
           ...row,
-          balance_before:    before,
-          balance_after:     after,
+          balance_before: before,
+          balance_after: after,
           responsible_email: row.created_by ? (emailById[row.created_by] ?? "Unknown account") : null,
         };
       });
@@ -205,7 +205,7 @@ export default function TransactionLogsTable() {
       })
       .subscribe();
     return () => { supabase.removeChannel(sub); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType]);
 
   function formatDateTime(isoString) {
@@ -238,10 +238,10 @@ export default function TransactionLogsTable() {
 
   function deletedReasonLabel(reason) {
     switch (reason) {
-      case "undone_item":    return "Deleted (undo item)";
+      case "undone_item": return "Deleted (undo item)";
       case "undone_session": return "Deleted (undo session)";
-      case "undone":          return "Deleted (undo)";
-      default:                return "Deleted";
+      case "undone": return "Deleted (undo)";
+      default: return "Deleted";
     }
   }
 
@@ -253,11 +253,11 @@ export default function TransactionLogsTable() {
     const q = search.trim().toLowerCase();
     if (!q) return true;
     const { date, time } = formatDateTime(r.created_at);
-    const stockType     = getStockType(r);
-    const qty           = stockType === "incoming" ? r.incoming_bal : stockType === "outgoing" ? r.outgoing_bal : null;
-    const source        = r.transaction_source ?? "ordered";
-    const txType        = r.transaction_type   ?? "stock_movement";
-    const status         = getStatus(r);
+    const stockType = getStockType(r);
+    const qty = stockType === "incoming" ? r.incoming_bal : stockType === "outgoing" ? r.outgoing_bal : null;
+    const source = r.transaction_source ?? "ordered";
+    const txType = r.transaction_type ?? "stock_movement";
+    const status = getStatus(r);
     const isManipulated = source === "manipulated";
     return [
       r.product_name,
@@ -273,7 +273,7 @@ export default function TransactionLogsTable() {
       status,
       qty != null ? String(qty) : null,
       isManipulated && r.actual_bal != null ? String(r.actual_bal) : null,
-      isManipulated && r.loss      != null ? String(r.loss)       : null,
+      isManipulated && r.loss != null ? String(r.loss) : null,
       String(r.balance_before),
       String(r.balance_after),
       date,
@@ -307,25 +307,22 @@ export default function TransactionLogsTable() {
         <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
           <button
             onClick={() => setProductType(PRODUCT_TYPE.RAW)}
-            className={`px-4 py-1.5 text-sm font-medium transition-colors ${
-              productType === PRODUCT_TYPE.RAW ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
+            className={`px-4 py-1.5 text-sm font-medium transition-colors ${productType === PRODUCT_TYPE.RAW ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              }`}
           >
             Raw Materials
           </button>
           <button
             onClick={() => setProductType(PRODUCT_TYPE.FINISHED)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              productType === PRODUCT_TYPE.FINISHED ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.FINISHED ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              }`}
           >
             Finished Products
           </button>
           <button
             onClick={() => setProductType(PRODUCT_TYPE.PACKAGING)}
-            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${
-              productType === PRODUCT_TYPE.PACKAGING ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
-            }`}
+            className={`px-4 py-1.5 text-sm font-medium border-l border-gray-200 transition-colors ${productType === PRODUCT_TYPE.PACKAGING ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+              }`}
           >
             Packaging
           </button>
@@ -415,7 +412,7 @@ export default function TransactionLogsTable() {
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Balance Before</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Balance After</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actual Count</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Loss</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">S/O</th>
                   {cfg.hasSupplier && <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Supplier</th>}
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Monitoring</th>
                   <th className="text-left px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Representative</th>
@@ -427,28 +424,27 @@ export default function TransactionLogsTable() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {filteredLogs.map((row) => {
-                  const stockType      = getStockType(row);
+                  const stockType = getStockType(row);
                   const { date, time } = formatDateTime(row.created_at);
-                  const isIncoming     = stockType === "incoming";
-                  const isOutgoing     = stockType === "outgoing";
-                  const isCorrection   = (row.transaction_type ?? "stock_movement") === "count_correction";
-                  const isManipulated  = (row.transaction_source ?? "ordered") === "manipulated";
-                  const qty            = isIncoming ? row.incoming_bal : isOutgoing ? row.outgoing_bal : null;
-                  const status         = getStatus(row);
-                  const isRemoved      = status === "deleted" || status === "reverted";
+                  const isIncoming = stockType === "incoming";
+                  const isOutgoing = stockType === "outgoing";
+                  const isCorrection = (row.transaction_type ?? "stock_movement") === "count_correction";
+                  const isManipulated = (row.transaction_source ?? "ordered") === "manipulated";
+                  const qty = isIncoming ? row.incoming_bal : isOutgoing ? row.outgoing_bal : null;
+                  const status = getStatus(row);
+                  const isRemoved = status === "deleted" || status === "reverted";
 
                   return (
                     <tr
                       key={row.id}
-                      className={`hover:bg-gray-50 transition-colors ${
-                        isCorrection
+                      className={`hover:bg-gray-50 transition-colors ${isCorrection
                           ? "bg-purple-50/30"
                           : status === "deleted"
                             ? "bg-red-50/40 border-l-4 border-red-300"
                             : status === "reverted"
                               ? "bg-orange-50/40 border-l-4 border-orange-300"
                               : ""
-                      }`}
+                        }`}
                     >
 
                       {/* Source */}
@@ -518,11 +514,10 @@ export default function TransactionLogsTable() {
                           </span>
                         ) : (
                           <div className="flex items-center gap-1.5">
-                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md ${
-                              isIncoming ? "bg-green-50 text-green-700"
-                              : isOutgoing ? "bg-red-50 text-red-700"
-                              : "bg-gray-100 text-gray-600"
-                            }`}>
+                            <span className={`font-mono text-xs font-semibold px-2 py-0.5 rounded-md ${isIncoming ? "bg-green-50 text-green-700"
+                                : isOutgoing ? "bg-red-50 text-red-700"
+                                  : "bg-gray-100 text-gray-600"
+                              }`}>
                               {row.balance_after}
                             </span>
                             {row.balance_after <= 0 && (

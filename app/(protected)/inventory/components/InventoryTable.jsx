@@ -46,7 +46,7 @@ export default function InventoryTable({ items, loading, onSelect, isFinalized, 
             <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Outgoing</th>
             <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Current</th>
             <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Actual</th>
-            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">Loss</th>
+            <th className="text-right px-4 py-2.5 text-xs font-medium uppercase tracking-wide text-gray-500">S/O</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">
@@ -123,13 +123,12 @@ export default function InventoryTable({ items, loading, onSelect, isFinalized, 
                 </td>
                 <td className="px-4 py-3 text-right">
                   <span
-                    className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${
-                      isOut
-                        ? "bg-red-100 text-red-700"
-                        : isLow
-                          ? "bg-amber-100 text-amber-700"
-                          : "bg-gray-100 text-gray-700"
-                    }`}
+                    className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs font-semibold ${isOut
+                      ? "bg-red-100 text-red-700"
+                      : isLow
+                        ? "bg-amber-100 text-amber-700"
+                        : "bg-gray-100 text-gray-700"
+                      }`}
                     title={isLow ? `Below low stock threshold (${lowStockValue})` : undefined}
                   >
                     {item.current_bal}

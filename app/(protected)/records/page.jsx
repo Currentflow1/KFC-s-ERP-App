@@ -21,10 +21,10 @@ function rangeStart(daysAgo) {
 function summarize(rows) {
   const days = new Set(rows.map((r) => r.inventory_date));
   return {
-    days:     days.size,
+    days: days.size,
     incoming: rows.reduce((a, r) => a + Number(r.incoming_bal || 0), 0),
     outgoing: rows.reduce((a, r) => a + Number(r.outgoing_bal || 0), 0),
-    loss:     rows.reduce((a, r) => a + Number(r.loss         || 0), 0),
+    loss: rows.reduce((a, r) => a + Number(r.loss || 0), 0),
   };
 }
 
@@ -61,7 +61,7 @@ function fmtDateTime(val) {
 
 function fmtDateTimeCSV(val) {
   if (!val) return "";
-  const d   = new Date(val);
+  const d = new Date(val);
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
@@ -69,12 +69,12 @@ function fmtDateTimeCSV(val) {
 // ─── tab → table mapping (Raw / Finished / Packaging) ─────────────────────────
 
 function historyTable(tab) {
-  if (tab === "raw")       return "raw_materials_inventory_history";
+  if (tab === "raw") return "raw_materials_inventory_history";
   if (tab === "packaging") return "packaging_inventory_history";
   return "finished_products_inventory_history";
 }
 function txLogTable(tab) {
-  if (tab === "raw")       return "raw_materials_transaction_log";
+  if (tab === "raw") return "raw_materials_transaction_log";
   if (tab === "packaging") return "packaging_transaction_log";
   return "finished_products_transaction_log";
 }
@@ -84,7 +84,7 @@ function txLogTable(tab) {
 // correct source for resolving a history/tx row's warehouse when the row
 // itself doesn't carry its own `warehouse` value.
 function invTable(tab) {
-  if (tab === "raw")       return "raw_materials_inventory";
+  if (tab === "raw") return "raw_materials_inventory";
   if (tab === "packaging") return "packaging_inventory";
   return "finished_products_inventory";
 }
@@ -99,10 +99,10 @@ function hasSupplierCol(tab) {
 
 function getTxStatus(row) {
   if (row.removed_at) {
-    if (row.removed_reason === "deleted")           return "deleted";
+    if (row.removed_reason === "deleted") return "deleted";
     if (row.removed_reason === "finalize_reverted") return "reverted";
-    if (row.removed_reason === "undone_item")       return "undone_item";
-    if (row.removed_reason === "undone_session")    return "undone_session";
+    if (row.removed_reason === "undone_item") return "undone_item";
+    if (row.removed_reason === "undone_session") return "undone_session";
     return "undone"; // legacy fallback for old rows written before the distinction
   }
   if (row.finalized_at) return "finalized";
@@ -115,14 +115,14 @@ function isRemovedStatus(status) {
 
 function statusLabel(status) {
   switch (status) {
-    case "finalized":     return "Finalized";
-    case "pending":       return "Pending";
-    case "deleted":       return "Deleted";
-    case "undone_item":   return "Undo item";
-    case "undone_session":return "Undo session";
-    case "undone":        return "Undone";
-    case "reverted":      return "Reopened";
-    default:              return status;
+    case "finalized": return "Finalized";
+    case "pending": return "Pending";
+    case "deleted": return "Deleted";
+    case "undone_item": return "Undo item";
+    case "undone_session": return "Undo session";
+    case "undone": return "Undone";
+    case "reverted": return "Reopened";
+    default: return status;
   }
 }
 
@@ -141,8 +141,8 @@ function downloadCSV(filename, headers, rows) {
     ...rows.map((r) => r.map(escapeCSV).join(",")),
   ];
   const blob = new Blob([lines.join("\n")], { type: "text/csv;charset=utf-8;" });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement("a");
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
 }
@@ -150,7 +150,7 @@ function downloadCSV(filename, headers, rows) {
 function exportHistoryCSV(rows, tab) {
   const headers = [
     "Date", "Product",
-    "Beg", "Incoming", "Outgoing", "Current", "Actual", "Loss",
+    "Beg", "Incoming", "Outgoing", "Current", "Actual", "S/O",
     "Warehouse", "Recorded At",
   ];
   const data = rows.map((r) => [
@@ -167,7 +167,7 @@ function exportTxCSV(rows, tab) {
   const headers = [
     "Created At", "Finalized At",
     "Product", "Type", "Source", "Status",
-    "Incoming", "Outgoing", "Actual", "Loss",
+    "Incoming", "Outgoing", "Actual", "S/O",
     "Monitoring", "Representative", "Staff",
     ...(hasSupplierCol(tab) ? ["Supplier"] : []),
     "Warehouse",
@@ -197,7 +197,7 @@ function exportAllCSV(histRows, txRows, tab) {
     "Section",
     "Date / Created At", "Finalized At", "Product",
     "Beg", "Current", "Actual",
-    "Incoming", "Outgoing", "Loss",
+    "Incoming", "Outgoing", "S/O",
     "Type", "Source", "Status",
     "Monitoring", "Representative", "Staff",
     ...(supplierCol ? ["Supplier"] : []),
@@ -249,15 +249,15 @@ function col(value, width, align = "left") {
 }
 
 function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, period, hasSupplier }) {
-  const W       = 132;
+  const W = 132;
   const divider = "-".repeat(W);
-  const title   = `INVENTORY RECORDS — ${tab.toUpperCase()} MATERIALS`;
-  const filter  = dateFrom || dateTo
+  const title = `INVENTORY RECORDS — ${tab.toUpperCase()} MATERIALS`;
+  const filter = dateFrom || dateTo
     ? `Period: ${dateFrom || "start"} to ${dateTo || todayLocal()}`
     : `Printed: ${new Date().toLocaleString(undefined, {
-        year: "numeric", month: "short", day: "numeric",
-        hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
-      })}`;
+      year: "numeric", month: "short", day: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true,
+    })}`;
 
   const lines = [];
   lines.push(title.padStart(Math.floor((W + title.length) / 2)));
@@ -271,7 +271,7 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
     lines.push(
       col("Incoming", 20) + col(String(active.incoming), 20, "right") +
       col("Outgoing", 20) + col(String(active.outgoing), 20, "right") +
-      col("Loss",     20) + col(String(active.loss),     12, "right")
+      col("S/O", 20) + col(String(active.loss), 12, "right")
     );
     lines.push(divider);
     lines.push("");
@@ -281,10 +281,10 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
   lines.push("FINALIZED HISTORY");
   lines.push(divider);
   lines.push(
-    col("Date",      12) + col("Product",    28) +
-    col("Beg",        8, "right") + col("In",  8, "right") + col("Out",     8, "right") +
-    col("Current",   10, "right") + col("Actual", 8, "right") + col("Loss", 8, "right") +
-    col("Warehouse", 18) + col("Recorded At", 24)
+    col("Date", 12) + col("Product", 28) +
+    col("Beg", 8, "right") + col("In", 8, "right") + col("Out", 8, "right") +
+    col("Current", 10, "right") + col("Actual", 8, "right") + col("S/O", 8, "right") +
+    col("", 3) + col("Warehouse", 18) + col("Recorded At", 24)
   );
   lines.push(divider);
   if (histRows.length === 0) {
@@ -292,12 +292,12 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
   } else {
     histRows.forEach((r) => {
       lines.push(
-        col(r.inventory_date,   12) + col(r.name,           28) +
-        col(raw(r.beg_bal),      8, "right") + col(raw(r.incoming_bal), 8, "right") +
+        col(r.inventory_date, 12) + col(r.name, 28) +
+        col(raw(r.beg_bal), 8, "right") + col(raw(r.incoming_bal), 8, "right") +
         col(raw(r.outgoing_bal), 8, "right") +
-        col(raw(r.current_bal), 10, "right") + col(raw(r.actual_bal),   8, "right") +
-        col(raw(r.loss),         8, "right") +
-        col(r.warehouse ?? "",  18) +
+        col(raw(r.current_bal), 10, "right") + col(raw(r.actual_bal), 8, "right") +
+        col(raw(r.loss), 8, "right") +
+        col("", 3) + col(r.warehouse ?? "", 18) +
         col(fmtDateTimeCSV(r.created_at), 24)
       );
     });
@@ -310,9 +310,9 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
   lines.push("TRANSACTION LOG");
   lines.push(divider);
   const txHdr = [
-    col("Created At",  22), col("Finalized At", 22), col("Product",  22),
-    col("Type",        14), col("Source",       12), col("Status",   16),
-    col("In",  8, "right"), col("Out", 8, "right"),
+    col("Created At", 22), col("Finalized At", 22), col("Product", 22),
+    col("Type", 14), col("Source", 12), col("Status", 16),
+    col("In", 8, "right"), col("Out", 8, "right"),
     col("Monitoring", 18), col("Rep.", 16),
     ...(hasSupplier ? [col("Supplier", 18)] : []),
     col("Warehouse", 14),
@@ -325,15 +325,15 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
     txRows.forEach((r) => {
       const status = getTxStatus(r);
       const rowCols = [
-        col(fmtDateTimeCSV(r.created_at),   22),
+        col(fmtDateTimeCSV(r.created_at), 22),
         col(fmtDateTimeCSV(r.finalized_at), 22),
-        col(r.product_name ?? "",           22),
+        col(r.product_name ?? "", 22),
         col(r.transaction_type === "count_correction" ? "Count corr." : "Stock move", 14),
         col(r.transaction_source === "manipulated" ? "Manual" : "Ordered", 12),
         col(statusLabel(status), 16),
-        col(raw(r.incoming_bal),  8, "right"),
-        col(raw(r.outgoing_bal),  8, "right"),
-        col(r.monitoring_employee ?? "",    18),
+        col(raw(r.incoming_bal), 8, "right"),
+        col(raw(r.outgoing_bal), 8, "right"),
+        col(r.monitoring_employee ?? "", 18),
         col(r.representative_employee ?? "", 16),
         ...(hasSupplier ? [col(r.supplier_name ?? "", 18)] : []),
         col(r.warehouse ?? "", 14),
@@ -386,7 +386,7 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
 
 function openDotMatrixPrint(opts) {
   const html = buildDotMatrixHTML(opts);
-  const win  = window.open("", "_blank", "width=1200,height=800");
+  const win = window.open("", "_blank", "width=1200,height=800");
   if (!win) { alert("Pop-up blocked — please allow pop-ups for this page."); return; }
   win.document.open();
   win.document.write(html);
@@ -411,13 +411,13 @@ function EmptyState({ message }) {
 
 function Badge({ children, color = "gray" }) {
   const colors = {
-    gray:   "bg-gray-100 text-gray-700",
-    green:  "bg-green-50 text-green-700",
-    red:    "bg-red-50 text-red-600",
-    blue:   "bg-blue-50 text-blue-700",
-    amber:  "bg-amber-50 text-amber-700",
+    gray: "bg-gray-100 text-gray-700",
+    green: "bg-green-50 text-green-700",
+    red: "bg-red-50 text-red-600",
+    blue: "bg-blue-50 text-blue-700",
+    amber: "bg-amber-50 text-amber-700",
     purple: "bg-purple-50 text-purple-700",
-    slate:  "bg-slate-100 text-slate-700 border border-slate-200",
+    slate: "bg-slate-100 text-slate-700 border border-slate-200",
     orange: "bg-orange-50 text-orange-700 border border-orange-200",
   };
   return (
@@ -529,14 +529,14 @@ export default function RecordsPage() {
   const supabase = createClient();
 
   // Raw is now the default landing tab (was "finished").
-  const [tab,    setTab]    = useState("raw");
+  const [tab, setTab] = useState("raw");
   const [period, setPeriod] = useState("weekly");
 
   const [dateFrom, setDateFrom] = useState("");
-  const [dateTo,   setDateTo]   = useState("");
+  const [dateTo, setDateTo] = useState("");
 
-  const [weekly,      setWeekly]      = useState(null);
-  const [monthly,     setMonthly]     = useState(null);
+  const [weekly, setWeekly] = useState(null);
+  const [monthly, setMonthly] = useState(null);
   const [summaryLoad, setSummaryLoad] = useState(true);
 
   const [histRows, setHistRows] = useState([]);
@@ -556,7 +556,7 @@ export default function RecordsPage() {
   const [inventoryWarehouseMap, setInventoryWarehouseMap] = useState({});
 
   const [histPage, setHistPage] = useState(1);
-  const [txPage,   setTxPage]   = useState(1);
+  const [txPage, setTxPage] = useState(1);
   const PAGE = 20;
 
   const tabRef = useRef("raw");
@@ -584,15 +584,15 @@ export default function RecordsPage() {
 
   async function loadSummary(whichTab) {
     setSummaryLoad(true);
-    const today      = todayLocal();
-    const weekStart  = rangeStart(6);
+    const today = todayLocal();
+    const weekStart = rangeStart(6);
     const monthStart = rangeStart(29);
     const { data } = await supabase
       .from(historyTable(whichTab))
       .select("inventory_date, incoming_bal, outgoing_bal, loss")
       .gte("inventory_date", monthStart)
       .lte("inventory_date", today);
-    const rows     = data || [];
+    const rows = data || [];
     const weekRows = rows.filter((r) => r.inventory_date >= weekStart);
     setWeekly(summarize(weekRows));
     setMonthly(summarize(rows));
@@ -603,9 +603,9 @@ export default function RecordsPage() {
     setHistLoad(true); setHistPage(1);
     let q = supabase.from(historyTable(whichTab)).select("*")
       .order("inventory_date", { ascending: false })
-      .order("name",           { ascending: true });
+      .order("name", { ascending: true });
     if (from) q = q.gte("inventory_date", from);
-    if (to)   q = q.lte("inventory_date", to);
+    if (to) q = q.lte("inventory_date", to);
     const { data } = await q;
     setHistRows(data || []);
     setHistLoad(false);
@@ -618,7 +618,7 @@ export default function RecordsPage() {
     let q = supabase.from(txLogTable(whichTab)).select("*")
       .order("created_at", { ascending: false });
     if (from) q = q.gte("created_at", from);
-    if (to)   q = q.lte("created_at", to + "T23:59:59.999Z");
+    if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
     const { data } = await q;
     setTxRows(data || []);
     setTxLoad(false);
@@ -629,7 +629,7 @@ export default function RecordsPage() {
     loadSummary(tab);
     loadHistory(tab, dateFrom, dateTo);
     loadTxLog(tab, dateFrom, dateTo);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
   function applyDateFilter() {
@@ -665,7 +665,7 @@ export default function RecordsPage() {
   const printOpts = () => ({
     tab, dateFrom, dateTo,
     histRows: enrichedHistRows.map((r) => ({ ...r, warehouse: r._warehouse })),
-    txRows:   enrichedTxRows.map((r)  => ({ ...r, warehouse: r._warehouse })),
+    txRows: enrichedTxRows.map((r) => ({ ...r, warehouse: r._warehouse })),
     active: period === "weekly" ? weekly : monthly,
     period,
     hasSupplier: hasSupplierCol(tab),
@@ -673,21 +673,21 @@ export default function RecordsPage() {
 
   // ── derived ───────────────────────────────────────────────────────────────
 
-  const active  = period === "weekly" ? weekly : monthly;
-  const hasSum  = active && active.days > 0;
+  const active = period === "weekly" ? weekly : monthly;
+  const hasSum = active && active.days > 0;
   const showSum = !summaryLoad && weekly && monthly && (weekly.days > 0 || monthly.days > 0);
 
   const histSlice = enrichedHistRows.slice((histPage - 1) * PAGE, histPage * PAGE);
   const histPages = Math.ceil(enrichedHistRows.length / PAGE);
-  const txSlice   = enrichedTxRows.slice((txPage - 1) * PAGE, txPage * PAGE);
-  const txPages   = Math.ceil(enrichedTxRows.length / PAGE);
+  const txSlice = enrichedTxRows.slice((txPage - 1) * PAGE, txPage * PAGE);
+  const txPages = Math.ceil(enrichedTxRows.length / PAGE);
 
   // ── tx table headers ──────────────────────────────────────────────────────
 
   const txHeaders = [
     "Created At", "Finalized At",
     "Product", "Type", "Source", "Status",
-    "In", "Out", "Actual", "Loss",
+    "In", "Out", "Actual", "S/O",
     "Monitoring", "Representative", "Staff",
     ...(hasSupplierCol(tab) ? ["Supplier"] : []),
     "Warehouse",
@@ -710,7 +710,7 @@ export default function RecordsPage() {
           <button
             onClick={() => exportAllCSV(
               enrichedHistRows.map((r) => ({ ...r, warehouse: r._warehouse })),
-              enrichedTxRows.map((r)  => ({ ...r, warehouse: r._warehouse })),
+              enrichedTxRows.map((r) => ({ ...r, warehouse: r._warehouse })),
               tab
             )}
             disabled={histRows.length === 0 && txRows.length === 0}
@@ -799,8 +799,8 @@ export default function RecordsPage() {
           {hasSum ? (
             <div className="grid grid-cols-3 gap-3">
               <StatCard label="Incoming" value={active.incoming} colorClass="text-green-600" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
-              <StatCard label="Outgoing" value={active.outgoing} colorClass="text-red-500"   sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
-              <StatCard label="Loss"     value={active.loss}     colorClass="text-orange-500" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
+              <StatCard label="Outgoing" value={active.outgoing} colorClass="text-red-500" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
+              <StatCard label="S/O" value={active.loss} colorClass="text-orange-500" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
             </div>
           ) : (
             <div className="bg-white border border-gray-200 rounded-lg px-5 py-4 shadow-sm">
@@ -850,7 +850,7 @@ export default function RecordsPage() {
                   <table className="w-full text-sm">
                     <thead>
                       <tr className="border-b border-gray-100 bg-gray-50">
-                        {["Date", "Product", "Beg", "Incoming", "Outgoing", "Current", "Actual", "Loss", "Warehouse", "Recorded At"].map((h) => (
+                        {["Date", "Product", "Beg", "Incoming", "Outgoing", "Current", "Actual", "S/O", "Warehouse", "Recorded At"].map((h) => (
                           <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
                         ))}
                       </tr>
@@ -948,18 +948,18 @@ export default function RecordsPage() {
                     </thead>
                     <tbody className="divide-y divide-gray-50">
                       {txSlice.map((row) => {
-                        const status      = getTxStatus(row);
-                        const removed     = isRemovedStatus(status);
-                        const isManip     = row.transaction_source === "manipulated";
-                        const isCorr      = row.transaction_type   === "count_correction";
-                        const dimClass    = removed ? "opacity-50 line-through" : "";
-                        const rowBg       =
-                          status === "deleted"       ? "bg-red-50/40 border-l-4 border-red-300" :
-                          status === "undone_item"   ? "bg-gray-50/70 border-l-4 border-slate-300" :
-                          status === "undone_session"? "bg-gray-50/70 border-l-4 border-slate-300" :
-                          status === "undone"        ? "bg-gray-50/70 border-l-4 border-slate-300" :
-                          status === "reverted"      ? "bg-orange-50/40 border-l-4 border-orange-300" :
-                          isCorr                     ? "bg-purple-50/30" : "";
+                        const status = getTxStatus(row);
+                        const removed = isRemovedStatus(status);
+                        const isManip = row.transaction_source === "manipulated";
+                        const isCorr = row.transaction_type === "count_correction";
+                        const dimClass = removed ? "opacity-50 line-through" : "";
+                        const rowBg =
+                          status === "deleted" ? "bg-red-50/40 border-l-4 border-red-300" :
+                            status === "undone_item" ? "bg-gray-50/70 border-l-4 border-slate-300" :
+                              status === "undone_session" ? "bg-gray-50/70 border-l-4 border-slate-300" :
+                                status === "undone" ? "bg-gray-50/70 border-l-4 border-slate-300" :
+                                  status === "reverted" ? "bg-orange-50/40 border-l-4 border-orange-300" :
+                                    isCorr ? "bg-purple-50/30" : "";
 
                         return (
                           <tr key={row.id} className={`hover:bg-gray-50 transition-colors ${rowBg}`}>
