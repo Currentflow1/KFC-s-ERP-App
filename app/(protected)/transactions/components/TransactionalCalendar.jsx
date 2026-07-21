@@ -40,11 +40,34 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
     const table = productType === "finished"
       ? "finished_products_transaction_log"
       : "raw_materials_transaction_log";
-    const { data } = await supabase.from(table).select("created_at");
-    const dates = new Set(
-      (data || []).map((r) => toDateString(new Date(r.created_at)))
-    );
-    setAvailableDates(dates);
+
+    // Paginate so we don't silently miss dates past Supabase's default
+    // 1000-row cap when a table has more rows than that.
+    const PAGE = 1000;
+    let page = 0;
+    const allDates = new Set();
+
+    while (true) {
+      const { data, error } = await supabase
+        .from(table)
+        .select("created_at")
+        .order("created_at", { ascending: false })
+        .range(page * PAGE, (page + 1) * PAGE - 1);
+
+      if (error) {
+        console.error("[TransactionCalendar] loadAvailableDates error:", error.message);
+        break;
+      }
+
+      (data || []).forEach((r) => {
+        if (r.created_at) allDates.add(toDateString(new Date(r.created_at)));
+      });
+
+      if (!data || data.length < PAGE) break;
+      page++;
+    }
+
+    setAvailableDates(allDates);
   }
 
   function changeMonth(offset) {
@@ -95,7 +118,7 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
 
           {/* Day-of-week headers */}
           <div className="grid grid-cols-7 gap-1 text-center text-xs text-gray-400 mb-1">
-            {["Su","Mo","Tu","We","Th","Fr","Sa"].map((w) => <div key={w}>{w}</div>)}
+            {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((w) => <div key={w}>{w}</div>)}
           </div>
 
           {/* Day cells */}
@@ -110,21 +133,19 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
                 <button
                   key={idx}
                   onClick={() => { onSelectDate(dStr); setOpen(false); }}
-                  className={`relative py-1 rounded text-xs transition-colors ${
-                    isSelected
+                  className={`relative py-1 rounded text-xs transition-colors ${isSelected
                       ? "bg-blue-600 text-white"
                       : isToday
                         ? "border border-blue-400 text-gray-900 font-semibold"
                         : hasActivity
                           ? "text-gray-800 hover:bg-blue-50"
                           : "text-gray-400 hover:bg-gray-50"
-                  }`}
+                    }`}
                 >
                   {cellDate.getDate()}
                   {hasActivity && (
-                    <span className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${
-                      isSelected ? "bg-white" : "bg-blue-500"
-                    }`} />
+                    <span className={`absolute bottom-0.5 left-1/2 -translate-x-1/2 w-1 h-1 rounded-full ${isSelected ? "bg-white" : "bg-blue-500"
+                      }`} />
                   )}
                 </button>
               );
