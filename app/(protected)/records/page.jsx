@@ -163,6 +163,17 @@ function exportHistoryCSV(rows, tab) {
   downloadCSV(`inventory-history-${tab}-${todayLocal()}.csv`, headers, data);
 }
 
+function exportMonthlySummaryCSV(rows, tab, monthLabel) {
+  const headers = ["Product", "Beg Bal", "Incoming", "Outgoing", "Current Bal", "Actual Bal", "S/O"];
+  const data = rows.map((p) => [
+    p.name,
+    raw(p.beg_bal), raw(p.incoming), raw(p.outgoing),
+    raw(p.current_bal), raw(p.actual_bal), raw(p.loss),
+  ]);
+  downloadCSV(`monthly-summary-${tab}-${todayLocal()}.csv`, headers, data);
+}
+
+
 function exportTxCSV(rows, tab) {
   const headers = [
     "Created At", "Finalized At",
@@ -384,6 +395,84 @@ function buildDotMatrixHTML({ tab, dateFrom, dateTo, histRows, txRows, active, p
 </html>`;
 }
 
+function buildMonthlySummaryHTML({ tab, monthLabel, rows }) {
+  const W = 110;
+  const divider = "-".repeat(W);
+  const title = `MONTHLY SUMMARY — ${tab.toUpperCase()} MATERIALS`;
+
+  const lines = [];
+  lines.push(title.padStart(Math.floor((W + title.length) / 2)));
+  lines.push(monthLabel || "");
+  lines.push("");
+  lines.push(
+    col("Product", 30) +
+    col("Beg", 12, "right") + col("Incoming", 12, "right") + col("Outgoing", 12, "right") +
+    col("Current", 12, "right") + col("Actual", 12, "right") + col("S/O", 10, "right")
+  );
+  lines.push(divider);
+  if (rows.length === 0) {
+    lines.push("  (no records)");
+  } else {
+    rows.forEach((p) => {
+      lines.push(
+        col(p.name, 30) +
+        col(raw(p.beg_bal), 12, "right") + col(raw(p.incoming), 12, "right") + col(raw(p.outgoing), 12, "right") +
+        col(raw(p.current_bal), 12, "right") + col(raw(p.actual_bal), 12, "right") + col(raw(p.loss), 10, "right")
+      );
+    });
+  }
+  lines.push(divider);
+  lines.push(`  Total products: ${rows.length}`);
+  lines.push("");
+  lines.push("*** END OF REPORT ***".padStart(Math.floor((W + 21) / 2)));
+
+  const preContent = lines.join("\n");
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Monthly Summary — ${tab} — ${todayLocal()}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: "Courier New", Courier, monospace;
+    font-size: 9pt;
+    line-height: 1.45;
+    background: #fff;
+    color: #000;
+    padding: 12mm 10mm;
+  }
+  body::before {
+    content: "";
+    display: block;
+    border-top: 2px dashed #bbb;
+    margin-bottom: 6mm;
+  }
+  pre { white-space: pre; overflow-x: visible; }
+  @media print {
+    body { padding: 6mm 8mm; }
+    body::before { border-top: 2px dashed #999; }
+    @page { size: landscape; margin: 6mm; }
+  }
+</style>
+</head>
+<body>
+<pre>${preContent.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</pre>
+<script>window.onload = function(){ window.print(); }<\/script>
+</body>
+</html>`;
+}
+
+function openMonthlySummaryPrint(opts) {
+  const html = buildMonthlySummaryHTML(opts);
+  const win = window.open("", "_blank", "width=1200,height=800");
+  if (!win) { alert("Pop-up blocked — please allow pop-ups for this page."); return; }
+  win.document.open();
+  win.document.write(html);
+  win.document.close();
+}
+
 function openDotMatrixPrint(opts) {
   const html = buildDotMatrixHTML(opts);
   const win = window.open("", "_blank", "width=1200,height=800");
@@ -397,10 +486,10 @@ function openDotMatrixPrint(opts) {
 
 function StatCard({ label, value, colorClass, sub }) {
   return (
-    <div className="bg-white border border-gray-200 rounded-lg px-5 py-4 shadow-sm">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-500 mb-1">{label}</p>
-      <p className={`text-2xl font-bold ${colorClass}`}>{fmt(value)}</p>
-      {sub && <p className="text-xs text-gray-500 mt-0.5">{sub}</p>}
+    <div className="bg-gray-50 border border-gray-100 rounded px-3 py-2">
+      <p className="text-[10px] font-medium uppercase tracking-wide text-gray-500 mb-0.5">{label}</p>
+      <p className={`text-base font-bold ${colorClass}`}>{fmt(value)}</p>
+      {sub && <p className="text-[10px] text-gray-500 mt-0.5">{sub}</p>}
     </div>
   );
 }
@@ -525,6 +614,9 @@ function TxStatusBadge({ row }) {
 
 // ─── main page ────────────────────────────────────────────────────────────────
 
+const CATEGORIES = ["raw", "finished", "packaging"];
+const CATEGORY_LABELS = { raw: "Raw", finished: "Finished", packaging: "Packaging" };
+
 export default function RecordsPage() {
   const supabase = createClient();
 
@@ -535,9 +627,20 @@ export default function RecordsPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  const [weekly, setWeekly] = useState(null);
-  const [monthly, setMonthly] = useState(null);
+  // Monthly per-product summary table for the currently selected tab.
+  // Each row = one product: beg_bal is its balance on the 1st of the
+  // month, incoming/outgoing are summed across every finalized day this
+  // month, current_bal/actual_bal are taken from the most recent finalized
+  // day, and S/O (loss) is computed last as actual - current.
+  const [monthlyRows, setMonthlyRows] = useState([]);
   const [summaryLoad, setSummaryLoad] = useState(true);
+  const [summaryMonthLabel, setSummaryMonthLabel] = useState("");
+  const [summaryOpen, setSummaryOpen] = useState(true);
+  const [summaryMonthValue, setSummaryMonthValue] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [summaryWeek, setSummaryWeek] = useState(0); // 0 = whole month, 1-5 = that week
 
   const [histRows, setHistRows] = useState([]);
   const [histLoad, setHistLoad] = useState(false);
@@ -557,10 +660,19 @@ export default function RecordsPage() {
 
   const [histPage, setHistPage] = useState(1);
   const [txPage, setTxPage] = useState(1);
+  const [summaryPage, setSummaryPage] = useState(1);
   const PAGE = 20;
 
   const tabRef = useRef("raw");
   tabRef.current = tab;
+
+  // Guards against race conditions: loadMonthlyProductSummary can get
+  // called multiple times in quick succession (mount, tab change, and the
+  // focus/visibilitychange refetch), and network responses can resolve
+  // out of order — an older, slower request can land AFTER a newer one and
+  // silently overwrite it with stale data. This ref tracks which call is
+  // the most recent one, so only its response is allowed to update state.
+  const summaryRequestId = useRef(0);
 
   // ── warehouse map ─────────────────────────────────────────────────────────
 
@@ -582,20 +694,110 @@ export default function RecordsPage() {
 
   // ── data loaders ──────────────────────────────────────────────────────────
 
-  async function loadSummary(whichTab) {
-    setSummaryLoad(true);
-    const today = todayLocal();
-    const weekStart = rangeStart(6);
-    const monthStart = rangeStart(29);
+  // Given "YYYY-MM" and a week number (0 = whole month, 1-5 = that week),
+  // returns { rangeFrom, rangeTo, label } as YYYY-MM-DD strings clipped to
+  // the actual number of days in that month. Week boundaries are simple
+  // fixed 7-day chunks: days 1-7, 8-14, 15-21, 22-28, 29-end.
+  function getMonthWeekRange(monthValue, week) {
+    const [yearStr, monStr] = (monthValue || "").split("-");
+    const year = Number(yearStr);
+    const month = Number(monStr); // 1-12
+    const daysInMonth = new Date(year, month, 0).getDate();
+    const pad = (n) => String(n).padStart(2, "0");
+    const dateStr = (day) => `${year}-${pad(month)}-${pad(day)}`;
+
+    if (!week || week === 0) {
+      return {
+        rangeFrom: dateStr(1),
+        rangeTo: dateStr(daysInMonth),
+        label: new Date(year, month - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" }),
+      };
+    }
+
+    const startDay = (week - 1) * 7 + 1;
+    const endDay = Math.min(startDay + 6, daysInMonth);
+    return {
+      rangeFrom: dateStr(Math.min(startDay, daysInMonth)),
+      rangeTo: dateStr(endDay),
+      label: `Week ${week} of ${new Date(year, month - 1, 1).toLocaleString(undefined, { month: "long", year: "numeric" })} (${dateStr(startDay)} to ${dateStr(endDay)})`,
+    };
+  }
+
+  // Builds one row per product for the given tab, scoped to the selected
+  // month + week (or the whole month if week = 0):
+  //  - beg_bal    -> that product's beg_bal on the FIRST day of the range
+  //  - incoming   -> sum of incoming_bal across every finalized day in range
+  //  - outgoing   -> sum of outgoing_bal across every finalized day in range
+  //  - current_bal / actual_bal -> taken from the LAST day of the range
+  //  - loss (S/O) -> computed last, as actual_bal - current_bal (signed:
+  //                  negative = shortage, positive = surplus)
+  async function loadMonthlyProductSummary(whichTab, monthValue, week) {
+    // Claim this call as the latest — any earlier in-flight call that
+    // resolves after this one will see its own id no longer matches and
+    // will skip updating state (see the check right before setMonthlyRows).
+    const requestId = ++summaryRequestId.current;
+
+    setSummaryLoad(true); setSummaryPage(1);
+
+    const { rangeFrom, rangeTo, label } = getMonthWeekRange(monthValue, week);
+    setSummaryMonthLabel(label);
+
     const { data } = await supabase
       .from(historyTable(whichTab))
-      .select("inventory_date, incoming_bal, outgoing_bal, loss")
-      .gte("inventory_date", monthStart)
-      .lte("inventory_date", today);
+      .select("inventory_id, name, inventory_date, beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal")
+      .gte("inventory_date", rangeFrom)
+      .lte("inventory_date", rangeTo)
+      .order("inventory_date", { ascending: true })
+      .range(0, 9999); // Supabase caps select() at 1000 rows by default — a
+    // full month of history across many products can exceed that easily,
+    // and since results are ordered ascending, the cutoff silently drops
+    // the MOST RECENT dates first if not widened.
+
     const rows = data || [];
-    const weekRows = rows.filter((r) => r.inventory_date >= weekStart);
-    setWeekly(summarize(weekRows));
-    setMonthly(summarize(rows));
+    const byProduct = new Map();
+
+    rows.forEach((r) => {
+      // Group by a NORMALIZED product name (trimmed + lowercased), not the
+      // raw name or inventory_id. inventory_id can change (warehouse
+      // reassignment, row recreation, etc.), and even raw name can silently
+      // split one product into two rows over a stray whitespace/casing
+      // difference between finalize runs. Normalizing collapses those back
+      // into one row so beg/current/actual always reflect the true first
+      // and last day of the range.
+      const normalizedName = (r.name ?? "").trim().toLowerCase();
+      const key = normalizedName || r.inventory_id;
+      if (!byProduct.has(key)) {
+        byProduct.set(key, {
+          id: key,
+          name: r.name,
+          beg_bal: Number(r.beg_bal ?? 0), // first occurrence = earliest date in range, since rows are ordered ascending
+          incoming: 0,
+          outgoing: 0,
+          current_bal: Number(r.current_bal ?? 0),
+          actual_bal: Number(r.actual_bal ?? 0),
+        });
+      }
+      const acc = byProduct.get(key);
+      acc.incoming += Number(r.incoming_bal ?? 0);
+      acc.outgoing += Number(r.outgoing_bal ?? 0);
+      // Rows are in ascending date order, so the LAST time we see this
+      // product this loop, its current_bal/actual_bal/name are from the
+      // LAST day of the range — keep overwriting so it ends up "latest".
+      acc.name = r.name;
+      acc.current_bal = Number(r.current_bal ?? 0);
+      acc.actual_bal = Number(r.actual_bal ?? 0);
+    });
+
+    const result = Array.from(byProduct.values())
+      .map((p) => ({ ...p, loss: p.actual_bal - p.current_bal })) // S/O computed last
+      .sort((a, b) => (a.name ?? "").localeCompare(b.name ?? "", undefined, { sensitivity: "base" }));
+
+    // Stale-response guard: if a newer call has been kicked off since this
+    // one started, discard this result instead of overwriting the newer
+    // (correct) state with old data.
+    if (requestId !== summaryRequestId.current) return;
+
+    setMonthlyRows(result);
     setSummaryLoad(false);
   }
 
@@ -603,7 +805,8 @@ export default function RecordsPage() {
     setHistLoad(true); setHistPage(1);
     let q = supabase.from(historyTable(whichTab)).select("*")
       .order("inventory_date", { ascending: false })
-      .order("name", { ascending: true });
+      .order("name", { ascending: true })
+      .range(0, 9999); // avoid Supabase's default 1000-row cap silently truncating large ranges
     if (from) q = q.gte("inventory_date", from);
     if (to) q = q.lte("inventory_date", to);
     const { data } = await q;
@@ -624,13 +827,45 @@ export default function RecordsPage() {
     setTxLoad(false);
   }
 
+  // History, tx log, and warehouse map depend on the selected tab + the
+  // History/Tx Log date filter (dateFrom/dateTo).
   useEffect(() => {
     loadWarehouseMap(tab);
-    loadSummary(tab);
     loadHistory(tab, dateFrom, dateTo);
     loadTxLog(tab, dateFrom, dateTo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
+
+  // Monthly summary has its OWN filter (month + week-of-month), independent
+  // of the History/Tx Log date range above — reload whenever the tab, the
+  // selected month, or the selected week changes.
+  useEffect(() => {
+    loadMonthlyProductSummary(tab, summaryMonthValue, summaryWeek);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, summaryMonthValue, summaryWeek]);
+
+  // Records is a separate route from Inventory — if a finalize happens
+  // there while this page is already open/backgrounded, our React state
+  // has no way to know about it. Refetch everything whenever this tab
+  // regains browser focus, so switching back after finalizing elsewhere
+  // shows current data without needing a manual reload.
+  useEffect(() => {
+    function handleFocus() {
+      loadMonthlyProductSummary(tabRef.current, summaryMonthValue, summaryWeek);
+      loadHistory(tabRef.current, dateFrom, dateTo);
+      loadTxLog(tabRef.current, dateFrom, dateTo);
+    }
+    function handleVisibility() {
+      if (document.visibilityState === "visible") handleFocus();
+    }
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFrom, dateTo, summaryMonthValue, summaryWeek]);
 
   function applyDateFilter() {
     loadHistory(tab, dateFrom, dateTo);
@@ -666,21 +901,19 @@ export default function RecordsPage() {
     tab, dateFrom, dateTo,
     histRows: enrichedHistRows.map((r) => ({ ...r, warehouse: r._warehouse })),
     txRows: enrichedTxRows.map((r) => ({ ...r, warehouse: r._warehouse })),
-    active: period === "weekly" ? weekly : monthly,
+    active: null,
     period,
     hasSupplier: hasSupplierCol(tab),
   });
 
   // ── derived ───────────────────────────────────────────────────────────────
 
-  const active = period === "weekly" ? weekly : monthly;
-  const hasSum = active && active.days > 0;
-  const showSum = !summaryLoad && weekly && monthly && (weekly.days > 0 || monthly.days > 0);
-
   const histSlice = enrichedHistRows.slice((histPage - 1) * PAGE, histPage * PAGE);
   const histPages = Math.ceil(enrichedHistRows.length / PAGE);
   const txSlice = enrichedTxRows.slice((txPage - 1) * PAGE, txPage * PAGE);
   const txPages = Math.ceil(enrichedTxRows.length / PAGE);
+  const summarySlice = monthlyRows.slice((summaryPage - 1) * PAGE, summaryPage * PAGE);
+  const summaryPages = Math.ceil(monthlyRows.length / PAGE);
 
   // ── tx table headers ──────────────────────────────────────────────────────
 
@@ -770,45 +1003,114 @@ export default function RecordsPage() {
         </div>
       </div>
 
-      {/* Summary */}
-      {showSum && (
-        <div className="mb-5">
-          <div className="flex items-center justify-between mb-3">
-            <div>
-              <h2 className="text-sm font-semibold text-black uppercase tracking-wide">Summary</h2>
-              {active && (
-                <p className="text-xs text-gray-500 mt-0.5">
-                  {period === "weekly" ? "Last 7 days" : "Last 30 days"}
-                  {active.days > 0
-                    ? ` — ${active.days} closed day${active.days === 1 ? "" : "s"}`
-                    : " — no data yet"}
-                </p>
+      {/* Monthly per-product summary — one row per product for the selected
+          tab, with its OWN Month + Week-of-month filter (independent of the
+          History/Tx Log date range below). Beg Bal = first day of the
+          selected range, Current/Actual Bal = last day of the range. */}
+      <div className="mb-5">
+        <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
+          <SectionHeader
+            title={`Monthly Summary — ${CATEGORY_LABELS[tab]}`}
+            count={monthlyRows.length}
+            countLabel="product"
+            open={summaryOpen}
+            onToggle={() => setSummaryOpen((v) => !v)}
+            actions={monthlyRows.length > 0 ? (
+              <>
+                <IconButton
+                  onClick={() => exportMonthlySummaryCSV(monthlyRows, tab, summaryMonthLabel)}
+                  title="Export monthly summary as CSV"
+                >
+                  ⬇ CSV
+                </IconButton>
+                <IconButton
+                  onClick={() => openMonthlySummaryPrint({ tab, monthLabel: summaryMonthLabel, rows: monthlyRows })}
+                  title="Print monthly summary (dot matrix)"
+                >
+                  🖨️ Print
+                </IconButton>
+              </>
+            ) : null}
+          />
+
+          {summaryOpen && (
+            <>
+              <div className="px-4 pt-3 flex flex-wrap items-center gap-2">
+                <label className="text-xs text-black font-semibold">Month</label>
+                <input
+                  type="month"
+                  value={summaryMonthValue}
+                  onChange={(e) => setSummaryMonthValue(e.target.value)}
+                  className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <label className="text-xs text-black font-semibold ml-2">Week</label>
+                <select
+                  value={summaryWeek}
+                  onChange={(e) => setSummaryWeek(Number(e.target.value))}
+                  className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value={0}>Whole month</option>
+                  <option value={1}>Week 1</option>
+                  <option value={2}>Week 2</option>
+                  <option value={3}>Week 3</option>
+                  <option value={4}>Week 4</option>
+                  <option value={5}>Week 5</option>
+                </select>
+              </div>
+
+              <p className="px-4 pt-2 text-xs text-gray-500">
+                {summaryMonthLabel} — beginning balance, totals, and closing balances per product
+              </p>
+
+              {summaryLoad ? (
+                <div className="py-10 text-center text-sm text-gray-500 animate-pulse">Loading…</div>
+              ) : monthlyRows.length === 0 ? (
+                <EmptyState message="No finalized days in this range yet for this category." />
+              ) : (
+                <>
+                  <div className="overflow-x-auto mt-2">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="border-b border-gray-100 bg-gray-50">
+                          {["Product", "Beg Bal", "Incoming", "Outgoing", "Current Bal", "Actual Bal", "S/O"].map((h) => (
+                            <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-gray-50">
+                        {summarySlice.map((p) => (
+                          <tr key={p.id} className="hover:bg-gray-50 transition-colors">
+                            <td className="px-4 py-2.5 font-medium text-black">{p.name}</td>
+                            <td className="px-4 py-2.5 text-black">{fmt(p.beg_bal)}</td>
+                            <td className="px-4 py-2.5 text-green-600 font-medium">{fmt(p.incoming)}</td>
+                            <td className="px-4 py-2.5 text-red-500 font-medium">{fmt(p.outgoing)}</td>
+                            <td className="px-4 py-2.5 text-black font-semibold">{fmt(p.current_bal)}</td>
+                            <td className="px-4 py-2.5 text-black">{fmt(p.actual_bal)}</td>
+                            <td className="px-4 py-2.5">{renderLoss(p.loss)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {summaryPages > 1 && (
+                    <div className="px-4 py-3 border-t border-gray-100 flex items-center justify-between text-xs text-black">
+                      <span>Page {summaryPage} of {summaryPages}</span>
+                      <div className="flex gap-1">
+                        <button onClick={() => setSummaryPage((p) => Math.max(1, p - 1))} disabled={summaryPage === 1}
+                          className="px-2.5 py-1 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">←</button>
+                        <button onClick={() => setSummaryPage((p) => Math.min(summaryPages, p + 1))} disabled={summaryPage === summaryPages}
+                          className="px-2.5 py-1 rounded border border-gray-200 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">→</button>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
-            </div>
-            <div className="flex rounded-md border border-gray-200 overflow-hidden">
-              <button onClick={() => setPeriod("weekly")}
-                className={`px-3 py-1 text-xs font-medium transition-colors ${period === "weekly" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
-                Weekly
-              </button>
-              <button onClick={() => setPeriod("monthly")}
-                className={`px-3 py-1 text-xs font-medium border-l border-gray-200 transition-colors ${period === "monthly" ? "bg-blue-600 text-white" : "bg-white text-black hover:bg-gray-50"}`}>
-                Monthly
-              </button>
-            </div>
-          </div>
-          {hasSum ? (
-            <div className="grid grid-cols-3 gap-3">
-              <StatCard label="Incoming" value={active.incoming} colorClass="text-green-600" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
-              <StatCard label="Outgoing" value={active.outgoing} colorClass="text-red-500" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
-              <StatCard label="S/O" value={active.loss} colorClass="text-orange-500" sub={`across ${active.days} day${active.days === 1 ? "" : "s"}`} />
-            </div>
-          ) : (
-            <div className="bg-white border border-gray-200 rounded-lg px-5 py-4 shadow-sm">
-              <p className="text-sm text-gray-500">No finalized days in this period yet.</p>
-            </div>
+            </>
           )}
         </div>
-      )}
+      </div>
 
       {/* ── Finalized History ── */}
       <div className="mb-5">
