@@ -723,14 +723,78 @@ export default function RecordsPage() {
     };
   }
 
+  // A product can exist in multiple warehouses (see raw_materials_warehouses
+  // etc. in the schema), which means the history table can have MULTIPLE
+  // rows for the same product on the same date — one per warehouse. Summing
+  // those into a single per-(product, date) total avoids picking an
+  // arbitrary single warehouse's row when we need "this product's balance
+  // on this date" as a whole.
+  function aggregateByProductDate(rows) {
+    const byKey = new Map(); // key = normalizedName|date
+    rows.forEach((r) => {
+      const normalizedName = (r.name ?? "").trim().toLowerCase();
+      const dateKey = `${normalizedName}|${r.inventory_date}`;
+      if (!byKey.has(dateKey)) {
+        byKey.set(dateKey, {
+          name: r.name,
+          normalizedName,
+          inventory_date: r.inventory_date,
+          beg_bal: 0,
+          incoming_bal: 0,
+          outgoing_bal: 0,
+          current_bal: 0,
+          actual_bal: 0,
+        });
+      }
+      const acc = byKey.get(dateKey);
+      acc.beg_bal += Number(r.beg_bal ?? 0);
+      acc.incoming_bal += Number(r.incoming_bal ?? 0);
+      acc.outgoing_bal += Number(r.outgoing_bal ?? 0);
+      acc.current_bal += Number(r.current_bal ?? 0);
+      acc.actual_bal += Number(r.actual_bal ?? 0);
+    });
+    return Array.from(byKey.values()).sort((a, b) =>
+      a.inventory_date < b.inventory_date ? -1 : a.inventory_date > b.inventory_date ? 1 : 0
+    );
+  }
+
   // Builds one row per product for the given tab, scoped to the selected
   // month + week (or the whole month if week = 0):
-  //  - beg_bal    -> that product's beg_bal on the FIRST day of the range
-  //  - incoming   -> sum of incoming_bal across every finalized day in range
-  //  - outgoing   -> sum of outgoing_bal across every finalized day in range
-  //  - current_bal / actual_bal -> taken from the LAST day of the range
+  //  - beg_bal    -> the PREVIOUS finalized day's actual_bal, summed across
+  //                  every warehouse (the last physically counted total
+  //                  before this range starts). Falls back to the summed
+  //                  stored beg_bal only if there's no earlier history at all.
+  //  - incoming   -> sum of incoming_bal across every finalized day AND every
+  //                  warehouse in range
+  //  - outgoing   -> sum of outgoing_bal across every finalized day AND every
+  //                  warehouse in range
+  //  - current_bal / actual_bal -> summed across every warehouse on the LAST
+  //                  date in range
   //  - loss (S/O) -> computed last, as actual_bal - current_bal (signed:
   //                  negative = shortage, positive = surplus)
+  // Fetches ALL rows matching a query, looping in fixed-size pages until a
+  // page comes back short (i.e. we've hit the true end of the data).
+  // Needed because Supabase/PostgREST can enforce a server-side max-rows
+  // cap (configured per-project) that silently truncates results even when
+  // .range() is asked for more — a single .range(0, 9999) call is NOT
+  // guaranteed to return everything. This loop keeps requesting subsequent
+  // pages until nothing more comes back, so large history tables (many
+  // products × many warehouses × many days) never get silently cut off.
+  async function fetchAllRows(buildQuery) {
+    const PAGE_SIZE = 500;
+    let offset = 0;
+    let all = [];
+    while (true) {
+      const { data, error } = await buildQuery().range(offset, offset + PAGE_SIZE - 1);
+      if (error) { console.error("[fetchAllRows] error:", error.message); break; }
+      const page = data || [];
+      all = all.concat(page);
+      if (page.length < PAGE_SIZE) break; // short page = no more data left
+      offset += PAGE_SIZE;
+    }
+    return all;
+  }
+
   async function loadMonthlyProductSummary(whichTab, monthValue, week) {
     // Claim this call as the latest — any earlier in-flight call that
     // resolves after this one will see its own id no longer matches and
@@ -742,50 +806,66 @@ export default function RecordsPage() {
     const { rangeFrom, rangeTo, label } = getMonthWeekRange(monthValue, week);
     setSummaryMonthLabel(label);
 
-    const { data } = await supabase
-      .from(historyTable(whichTab))
-      .select("inventory_id, name, inventory_date, beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal")
-      .gte("inventory_date", rangeFrom)
-      .lte("inventory_date", rangeTo)
-      .order("inventory_date", { ascending: true })
-      .range(0, 9999); // Supabase caps select() at 1000 rows by default — a
-    // full month of history across many products can exceed that easily,
-    // and since results are ordered ascending, the cutoff silently drops
-    // the MOST RECENT dates first if not widened.
+    // Look up each product's actual_bal (summed across warehouses) from the
+    // LAST finalized date BEFORE this range starts. This becomes the
+    // range's beg_bal below.
+    const priorData = await fetchAllRows(() =>
+      supabase
+        .from(historyTable(whichTab))
+        .select("name, inventory_date, actual_bal")
+        .lt("inventory_date", rangeFrom)
+        .order("inventory_date", { ascending: true })
+    );
 
-    const rows = data || [];
+    const priorAggregated = aggregateByProductDate(priorData || []);
+    const priorActualByName = new Map();
+    const priorDateByName = new Map();
+    priorAggregated.forEach((r) => {
+      // Ascending order — last write per key wins, so this ends up being
+      // the most recent date BEFORE the range, per product, with all its
+      // warehouses already summed together.
+      priorActualByName.set(r.normalizedName, r.actual_bal);
+      priorDateByName.set(r.normalizedName, r.inventory_date);
+    });
+
+    const data = await fetchAllRows(() =>
+      supabase
+        .from(historyTable(whichTab))
+        .select("inventory_id, name, inventory_date, beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal")
+        .gte("inventory_date", rangeFrom)
+        .lte("inventory_date", rangeTo)
+        .order("inventory_date", { ascending: true })
+    );
+
+    const aggregatedRows = aggregateByProductDate(data || []);
     const byProduct = new Map();
 
-    rows.forEach((r) => {
-      // Group by a NORMALIZED product name (trimmed + lowercased), not the
-      // raw name or inventory_id. inventory_id can change (warehouse
-      // reassignment, row recreation, etc.), and even raw name can silently
-      // split one product into two rows over a stray whitespace/casing
-      // difference between finalize runs. Normalizing collapses those back
-      // into one row so beg/current/actual always reflect the true first
-      // and last day of the range.
-      const normalizedName = (r.name ?? "").trim().toLowerCase();
-      const key = normalizedName || r.inventory_id;
+    aggregatedRows.forEach((r) => {
+      const key = r.normalizedName;
       if (!byProduct.has(key)) {
+        const priorActual = priorActualByName.get(key);
+        const priorDate = priorDateByName.get(key);
         byProduct.set(key, {
           id: key,
           name: r.name,
-          beg_bal: Number(r.beg_bal ?? 0), // first occurrence = earliest date in range, since rows are ordered ascending
+          beg_bal: priorActual !== undefined ? priorActual : r.beg_bal,
+          beg_bal_source: priorActual !== undefined ? priorDate : "no prior data — used stored beg_bal",
           incoming: 0,
           outgoing: 0,
-          current_bal: Number(r.current_bal ?? 0),
-          actual_bal: Number(r.actual_bal ?? 0),
+          current_bal: r.current_bal,
+          actual_bal: r.actual_bal,
         });
       }
       const acc = byProduct.get(key);
-      acc.incoming += Number(r.incoming_bal ?? 0);
-      acc.outgoing += Number(r.outgoing_bal ?? 0);
-      // Rows are in ascending date order, so the LAST time we see this
-      // product this loop, its current_bal/actual_bal/name are from the
-      // LAST day of the range — keep overwriting so it ends up "latest".
+      acc.incoming += r.incoming_bal;
+      acc.outgoing += r.outgoing_bal;
+      // Aggregated rows are in ascending date order, so the LAST time we
+      // see this product, its current_bal/actual_bal/name are from the
+      // LAST date in range (already summed across warehouses) — keep
+      // overwriting so it ends up "latest".
       acc.name = r.name;
-      acc.current_bal = Number(r.current_bal ?? 0);
-      acc.actual_bal = Number(r.actual_bal ?? 0);
+      acc.current_bal = r.current_bal;
+      acc.actual_bal = r.actual_bal;
     });
 
     const result = Array.from(byProduct.values())
@@ -803,13 +883,14 @@ export default function RecordsPage() {
 
   async function loadHistory(whichTab, from, to) {
     setHistLoad(true); setHistPage(1);
-    let q = supabase.from(historyTable(whichTab)).select("*")
-      .order("inventory_date", { ascending: false })
-      .order("name", { ascending: true })
-      .range(0, 9999); // avoid Supabase's default 1000-row cap silently truncating large ranges
-    if (from) q = q.gte("inventory_date", from);
-    if (to) q = q.lte("inventory_date", to);
-    const { data } = await q;
+    const data = await fetchAllRows(() => {
+      let q = supabase.from(historyTable(whichTab)).select("*")
+        .order("inventory_date", { ascending: false })
+        .order("name", { ascending: true });
+      if (from) q = q.gte("inventory_date", from);
+      if (to) q = q.lte("inventory_date", to);
+      return q;
+    });
     setHistRows(data || []);
     setHistLoad(false);
   }
