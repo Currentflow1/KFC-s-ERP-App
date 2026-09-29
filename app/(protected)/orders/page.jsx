@@ -362,18 +362,26 @@ export default function OrderTable() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType, stockType]);
 
-  // ── Auto-sync when the connection returns ─────────────────────────────────
-
+  // ── Auto-sync queued orders ───────────────────────────────────────────────
+  // Runs when the page loads while online AND whenever the connection comes
+  // back. Flushing on load matters: if the page was reloaded (or opened)
+  // after reconnecting, there is no offline -> online event to trigger it,
+  // and queued orders would otherwise stay "Queued — not synced yet".
   const wasOffline = useRef(false);
   useEffect(() => {
     if (offline) { wasOffline.current = true; return; }
-    if (!wasOffline.current) return;
+
+    const cameBack = wasOffline.current;
     wasOffline.current = false;
+
     (async () => {
       await flushOutbox();
-      await fetchOptions();
+      if (cameBack) {
+        // Refresh the cached dropdown data after a reconnect.
+        await fetchOptions();
+        await checkIfTodayFinalized();
+      }
       await fetchRows();
-      await checkIfTodayFinalized();
     })();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offline]);
