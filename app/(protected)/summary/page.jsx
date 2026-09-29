@@ -7,6 +7,7 @@ import InventoryCalendar from "@/app/(protected)/inventory/components/InventoryC
 import {
   ComposedChart,
   Bar,
+  Line,
   Cell,
   XAxis,
   YAxis,
@@ -19,6 +20,9 @@ import {
 // Fallback only — real threshold comes from each product's own
 // low_stock_value (Products page). Mirrors the DB column default.
 const DEFAULT_LOW_STOCK_VALUE = 10;
+
+// Number of observations (days with a finalized snapshot) in the moving average.
+const MA_WINDOW = 7;
 
 // Coerce any DB value to a finite number, falling back instead of ever
 // producing NaN (which React refuses to render and blank/odd values from
@@ -66,6 +70,14 @@ const TAB_ORDER = ["raw", "finished", "packaging"];
 
 function cfg(tab) { return TAB_CONFIG[tab] ?? TAB_CONFIG.finished; }
 
+// Time-range options for the time series analysis.
+const RANGE_OPTIONS = [
+  { key: "30",  label: "30D",  days: 30 },
+  { key: "90",  label: "90D",  days: 90 },
+  { key: "180", label: "6M",   days: 180 },
+  { key: "all", label: "All",  days: null },
+];
+
 // ── Diverging-chart helper ────────────────────────────────────────────────
 // variance = actual_bal - current_bal. Negative = shrinkage/loss (red),
 // positive = surplus/overage (green), zero = matched (neutral gray).
@@ -73,6 +85,12 @@ function varianceColor(variance) {
   if (variance < 0) return "#DC2626";
   if (variance > 0) return "#16A34A";
   return "#9CA3AF";
+}
+
+function fmtSigned(n, digits = 0) {
+  const v = Number.isFinite(n) ? n : 0;
+  const s = digits > 0 ? v.toFixed(digits) : String(Math.round(v));
+  return v > 0 ? `+${s}` : s;
 }
 
 // ── Warehouse dropdown (multi-select with checkboxes) ────────────────────────
@@ -146,6 +164,17 @@ function WarehouseMultiSelect({ options, selected, onChange }) {
   );
 }
 
+// ── Small stat tile used in the time series panel ────────────────────────────
+function StatTile({ label, value, sub, tone = "text-gray-900" }) {
+  return (
+    <div className="border border-gray-200 rounded-lg px-3 py-2 bg-white">
+      <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400">{label}</div>
+      <div className={`text-lg font-semibold mt-0.5 ${tone}`}>{value}</div>
+      {sub && <div className="text-[11px] text-gray-400 mt-0.5 truncate">{sub}</div>}
+    </div>
+  );
+}
+
 export default function SummaryPage() {
   const supabase = useMemo(() => createClient(), []);
 
@@ -161,10 +190,22 @@ export default function SummaryPage() {
   const [warehouseFilter, setWarehouseFilter] = useState([]);
   const [availableWarehouses, setAvailableWarehouses] = useState([]);
 
+  // ── Time series analysis state ────────────────────────────────────────────
+  const [products, setProducts]           = useState([]);   // static products for the current tab
+  const [productId, setProductId]         = useState("");   // selected product (static id)
+  const [range, setRange]                 = useState("90");
+  const [metric, setMetric]               = useState("variance"); // "variance" | "balances"
+  const [seriesRows, setSeriesRows]       = useState([]);   // raw history rows for the product
+  const [seriesLoading, setSeriesLoading] = useState(false);
+
   const tabRef = useRef(tab);
   const dateRef = useRef(date);
+  const productIdRef = useRef(productId);
+  const rangeRef = useRef(range);
   tabRef.current = tab;
   dateRef.current = date;
+  productIdRef.current = productId;
+  rangeRef.current = range;
 
   useEffect(() => {
     loadAvailableWarehouses();
@@ -179,6 +220,21 @@ export default function SummaryPage() {
   useEffect(() => {
     setWarehouseFilter([]);
   }, [tab, date]);
+
+  // Reload the product list whenever the tab changes; clear the selection
+  // first so a stale product id from another tab is never queried.
+  useEffect(() => {
+    setProductId("");
+    setSeriesRows([]);
+    loadProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  // Reload the series when the product or range changes.
+  useEffect(() => {
+    loadSeries();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, productId, range]);
 
   // ── Realtime ──────────────────────────────────────────────────────────────
   // Keep the dashboard live: pending orders (tx table), finalize/undo
@@ -210,7 +266,12 @@ export default function SummaryPage() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: tabCfg.hist },
-        () => { if (tabRef.current === tab) loadData(); }
+        () => {
+          if (tabRef.current === tab) {
+            loadData();
+            loadSeries();
+          }
+        }
       )
       .subscribe();
 
@@ -242,6 +303,93 @@ export default function SummaryPage() {
     } catch (e) {
       console.error("[loadAvailableWarehouses] error:", e);
       setAvailableWarehouses([]);
+    }
+  }
+
+  // ── Load the product list for the picker ──────────────────────────────────
+  async function loadProducts() {
+    const t = tab;
+    try {
+      const { data, error } = await supabase
+        .from(cfg(t).static)
+        .select("id, name, discontinued")
+        .order("name", { ascending: true });
+
+      if (error) throw error;
+      if (tabRef.current !== t) return; // tab changed while loading
+
+      const list = (data || [])
+        .filter((p) => p.name)
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
+
+      setProducts(list);
+      // Default to the first active product so the chart isn't empty on load.
+      const firstActive = list.find((p) => !p.discontinued) ?? list[0];
+      setProductId(firstActive ? firstActive.id : "");
+    } catch (e) {
+      console.error("[loadProducts] error:", e);
+      setProducts([]);
+      setProductId("");
+    }
+  }
+
+  // ── Load the history time series for the selected product ─────────────────
+  //
+  // History rows don't store the product fk, only inventory_id. So we first
+  // look up every live inventory row (one per warehouse) belonging to the
+  // selected product, then pull all history rows for those inventory ids.
+  // Note: history for an inventory row that was later deleted can't be
+  // linked back to its product and won't appear here.
+  async function loadSeries() {
+    const pid = productIdRef.current;
+    const t = tabRef.current;
+    const r = rangeRef.current;
+
+    if (!pid) {
+      setSeriesRows([]);
+      return;
+    }
+
+    setSeriesLoading(true);
+    const tabCfg = cfg(t);
+
+    try {
+      const { data: invRows, error: invErr } = await supabase
+        .from(tabCfg.inv)
+        .select("id")
+        .eq(tabCfg.fk, pid);
+      if (invErr) throw invErr;
+
+      const ids = (invRows || []).map((row) => row.id);
+      if (ids.length === 0) {
+        if (tabRef.current === t && productIdRef.current === pid) setSeriesRows([]);
+        return;
+      }
+
+      let query = supabase
+        .from(tabCfg.hist)
+        .select("inventory_id, inventory_date, warehouse, beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal")
+        .in("inventory_id", ids)
+        .order("inventory_date", { ascending: true })
+        .limit(10000);
+
+      const opt = RANGE_OPTIONS.find((o) => o.key === r);
+      if (opt?.days) {
+        const cutoff = new Date(Date.now() - opt.days * 86400000).toISOString().slice(0, 10);
+        query = query.gte("inventory_date", cutoff);
+      }
+
+      const { data: histRows, error: histErr } = await query;
+      if (histErr) throw histErr;
+
+      // Ignore the result if the user switched tab/product/range meanwhile.
+      if (tabRef.current !== t || productIdRef.current !== pid || rangeRef.current !== r) return;
+      setSeriesRows(histRows || []);
+    } catch (e) {
+      console.error("[loadSeries] failed:", e);
+      setSeriesRows([]);
+    } finally {
+      setSeriesLoading(false);
     }
   }
 
@@ -411,20 +559,77 @@ export default function SummaryPage() {
 
   const hasAlerts = priorityList.length > 0;
 
-  const chartData = useMemo(
-    () => filteredItems.map((i) => ({
-      name: i.name,
-      variance: Number.isFinite(i.variance) ? Number(i.variance) : 0,
-    })),
-    [filteredItems]
+  // ── Time series: one point per snapshot date ──────────────────────────────
+  // Sums across the product's warehouses (respecting the warehouse filter),
+  // then adds a trailing moving average of the variance.
+  const series = useMemo(() => {
+    const byDate = new Map();
+    seriesRows.forEach((r) => {
+      if (warehouseFilter.length > 0 && !warehouseFilter.includes(r.warehouse)) return;
+      const d = r.inventory_date;
+      if (!d) return;
+      const cur = byDate.get(d) ?? { date: d, current: 0, actual: 0 };
+      cur.current += toNum(r.current_bal);
+      cur.actual += toNum(r.actual_bal);
+      byDate.set(d, cur);
+    });
+
+    const arr = [...byDate.values()]
+      .sort((a, b) => a.date.localeCompare(b.date))
+      .map((p) => ({ ...p, variance: p.actual - p.current }));
+
+    return arr.map((p, i) => {
+      const win = arr.slice(Math.max(0, i - MA_WINDOW + 1), i + 1);
+      const ma = win.reduce((a, b) => a + b.variance, 0) / win.length;
+      return { ...p, ma: Math.round(ma * 100) / 100 };
+    });
+  }, [seriesRows, warehouseFilter]);
+
+  const seriesStats = useMemo(() => {
+    const n = series.length;
+    if (n === 0) return null;
+
+    const vals = series.map((p) => p.variance);
+    const total = vals.reduce((a, b) => a + b, 0);
+    const mean = total / n;
+    const variance = vals.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
+    const std = Math.sqrt(variance);
+
+    const worst = series.reduce((m, p) => (p.variance < m.variance ? p : m), series[0]);
+    const best = series.reduce((m, p) => (p.variance > m.variance ? p : m), series[0]);
+    const shortageDays = vals.filter((v) => v < 0).length;
+    const totalShortage = vals.reduce((a, b) => a + Math.max(0, -b), 0);
+
+    // Least-squares slope of variance vs. observation index.
+    // Positive = trending toward surplus, negative = trending toward loss.
+    let slope = 0;
+    if (n >= 2) {
+      const xMean = (n - 1) / 2;
+      let num = 0;
+      let den = 0;
+      vals.forEach((v, i) => {
+        num += (i - xMean) * (v - mean);
+        den += (i - xMean) ** 2;
+      });
+      slope = den === 0 ? 0 : num / den;
+    }
+
+    return { n, total, mean, std, worst, best, shortageDays, totalShortage, slope };
+  }, [series]);
+
+  const selectedProduct = useMemo(
+    () => products.find((p) => p.id === productId) ?? null,
+    [products, productId]
   );
 
-  // Symmetric axis ceiling so shortage (left) and surplus (right) bars
-  // both have equal room to diverge from the zero center line.
-  const chartMax = useMemo(() => {
-    const maxAbs = chartData.reduce((m, d) => Math.max(m, Math.abs(d.variance)), 0);
+  // Symmetric y ceiling so shortage and surplus have equal room around zero.
+  const seriesMax = useMemo(() => {
+    const maxAbs = series.reduce(
+      (m, d) => Math.max(m, Math.abs(d.variance), Math.abs(d.ma)),
+      0
+    );
     return Math.max(5, Math.ceil(maxAbs * 1.15));
-  }, [chartData]);
+  }, [series]);
 
   // Subtitle / footer label for active warehouse filter
   const warehouseLabel = warehouseFilter.length === 0
@@ -568,7 +773,7 @@ export default function SummaryPage() {
           </div>
         )}
 
-        {/* Chart — horizontal bar (collapsible) */}
+        {/* Time series analysis — pick a product, see its variance over time (collapsible) */}
         <div className="print-hide-chart mb-5 bg-white border border-gray-200 rounded-lg shadow-sm p-4">
           <button
             type="button"
@@ -585,58 +790,226 @@ export default function SummaryPage() {
                 ▼
               </span>
               <h2 className="text-xs font-semibold uppercase tracking-wide text-gray-500 group-hover:text-gray-700">
-                Actual vs. current variance by item
+                Time series analysis{selectedProduct ? ` — ${selectedProduct.name}` : ""}
               </h2>
             </span>
             <div className="flex flex-wrap items-center gap-3 text-xs text-gray-400">
-              {!chartCollapsed && (
+              {!chartCollapsed && metric === "variance" && (
                 <>
                   <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-red-600" /> shortage</span>
                   <span className="flex items-center gap-1.5"><span className="inline-block w-2 h-2 rounded-sm bg-green-600" /> surplus</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 bg-blue-600" /> {MA_WINDOW}-pt avg</span>
+                </>
+              )}
+              {!chartCollapsed && metric === "balances" && (
+                <>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 bg-gray-500" /> current</span>
+                  <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-0.5 bg-amber-500" /> actual</span>
                 </>
               )}
               <span className="text-gray-300">{chartCollapsed ? "Show" : "Hide"}</span>
             </div>
           </button>
+
           {!chartCollapsed && (
-            <ResponsiveContainer width="100%" height={Math.max(260, chartData.length * 32)}>
-              <ComposedChart data={chartData} layout="vertical" margin={{ left: 10, right: 24 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" horizontal={false} />
-                <XAxis
-                  type="number"
-                  domain={[-chartMax, chartMax]}
-                  tick={{ fontSize: 11, fill: "#9CA3AF" }}
-                  axisLine={false}
-                  tickLine={false}
-                  allowDecimals={false}
-                />
-                <YAxis
-                  type="category"
-                  dataKey="name"
-                  tick={{ fontSize: 11, fill: "#000000" }}
-                  axisLine={{ stroke: "#E5E7EB" }}
-                  tickLine={false}
-                  width={120}
-                />
-                <ReferenceLine x={0} stroke="#D1D5DB" />
-                <Tooltip
-                  cursor={{ fill: "#F9FAFB" }}
-                  contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }}
-                  formatter={(value) => [value > 0 ? `+${value}` : value, "Variance"]}
-                />
-                <Bar
-                  dataKey="variance"
-                  name="Variance"
-                  radius={[3, 3, 3, 3]}
-                  barSize={14}
-                  isAnimationActive={false}
+            <>
+              {/* Controls */}
+              <div className="no-print flex flex-wrap items-center gap-2 mb-4">
+                <select
+                  value={productId}
+                  onChange={(e) => setProductId(e.target.value)}
+                  disabled={products.length === 0}
+                  className="px-3 py-1.5 rounded-md border border-gray-200 bg-white text-sm text-gray-700 min-w-[220px] max-w-full focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
                 >
-                  {chartData.map((entry, idx) => (
-                    <Cell key={`cell-${idx}`} fill={varianceColor(entry.variance)} />
+                  {products.length === 0 && <option value="">No products</option>}
+                  {products.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.discontinued ? " (discontinued)" : ""}
+                    </option>
                   ))}
-                </Bar>
-              </ComposedChart>
-            </ResponsiveContainer>
+                </select>
+
+                <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
+                  {RANGE_OPTIONS.map((o, idx) => (
+                    <button
+                      key={o.key}
+                      type="button"
+                      onClick={() => setRange(o.key)}
+                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${idx > 0 ? "border-l border-gray-200" : ""} ${
+                        range === o.key ? "bg-blue-600 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                      }`}
+                    >
+                      {o.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex rounded-md border border-gray-200 overflow-hidden shrink-0">
+                  {[
+                    { key: "variance", label: "Variance" },
+                    { key: "balances", label: "Actual vs Current" },
+                  ].map((m, idx) => (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setMetric(m.key)}
+                      className={`px-3 py-1.5 text-sm font-medium transition-colors ${idx > 0 ? "border-l border-gray-200" : ""} ${
+                        metric === m.key ? "bg-gray-900 text-white" : "bg-white text-gray-600 hover:bg-gray-50"
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+
+                {seriesLoading && <span className="text-xs text-gray-400 animate-pulse">Loading…</span>}
+                {warehouseLabel && (
+                  <span className="ml-auto text-xs text-gray-400">📦 {warehouseLabel}</span>
+                )}
+              </div>
+
+              {/* Stats */}
+              {seriesStats && (
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2 mb-4">
+                  <StatTile
+                    label="Snapshots"
+                    value={seriesStats.n}
+                    sub={`${series[0].date} → ${series[series.length - 1].date}`}
+                  />
+                  <StatTile
+                    label="Net variance"
+                    value={fmtSigned(seriesStats.total)}
+                    sub="sum over period"
+                    tone={seriesStats.total < 0 ? "text-red-600" : seriesStats.total > 0 ? "text-green-600" : "text-gray-900"}
+                  />
+                  <StatTile
+                    label="Avg / snapshot"
+                    value={fmtSigned(seriesStats.mean, 2)}
+                    sub={`σ ${seriesStats.std.toFixed(2)}`}
+                    tone={seriesStats.mean < 0 ? "text-red-600" : seriesStats.mean > 0 ? "text-green-600" : "text-gray-900"}
+                  />
+                  <StatTile
+                    label="Shortage days"
+                    value={`${seriesStats.shortageDays}/${seriesStats.n}`}
+                    sub={`${Math.round((seriesStats.shortageDays / seriesStats.n) * 100)}% · ${seriesStats.totalShortage} lost`}
+                    tone={seriesStats.shortageDays > 0 ? "text-red-600" : "text-gray-900"}
+                  />
+                  <StatTile
+                    label="Worst day"
+                    value={fmtSigned(seriesStats.worst.variance)}
+                    sub={seriesStats.worst.date}
+                    tone={seriesStats.worst.variance < 0 ? "text-red-600" : "text-gray-900"}
+                  />
+                  <StatTile
+                    label="Trend"
+                    value={
+                      Math.abs(seriesStats.slope) < 0.005
+                        ? "Flat"
+                        : seriesStats.slope > 0
+                          ? "↗ Improving"
+                          : "↘ Worsening"
+                    }
+                    sub={`${fmtSigned(seriesStats.slope, 2)} per snapshot`}
+                    tone={
+                      Math.abs(seriesStats.slope) < 0.005
+                        ? "text-gray-900"
+                        : seriesStats.slope > 0
+                          ? "text-green-600"
+                          : "text-red-600"
+                    }
+                  />
+                </div>
+              )}
+
+              {/* Chart */}
+              {!productId ? (
+                <div className="py-16 text-center text-sm text-gray-400">Pick a product to analyze.</div>
+              ) : series.length === 0 ? (
+                <div className="py-16 text-center text-sm text-gray-400">
+                  {seriesLoading ? "Loading…" : "No finalized history found for this product in the selected range."}
+                </div>
+              ) : (
+                <ResponsiveContainer width="100%" height={320}>
+                  <ComposedChart data={series} margin={{ left: 0, right: 24, top: 8, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#F3F4F6" vertical={false} />
+                    <XAxis
+                      dataKey="date"
+                      tick={{ fontSize: 11, fill: "#9CA3AF" }}
+                      axisLine={{ stroke: "#E5E7EB" }}
+                      tickLine={false}
+                      tickFormatter={(d) => (typeof d === "string" ? d.slice(5) : d)}
+                      minTickGap={16}
+                    />
+                    <YAxis
+                      tick={{ fontSize: 11, fill: "#9CA3AF" }}
+                      axisLine={false}
+                      tickLine={false}
+                      allowDecimals={false}
+                      width={48}
+                      domain={metric === "variance" ? [-seriesMax, seriesMax] : ["auto", "auto"]}
+                    />
+                    {metric === "variance" && <ReferenceLine y={0} stroke="#D1D5DB" />}
+                    <Tooltip
+                      cursor={{ fill: "#F9FAFB" }}
+                      contentStyle={{ borderRadius: 8, fontSize: 12, border: "1px solid #E5E7EB" }}
+                      labelFormatter={(d) => `Date: ${d}`}
+                      formatter={(value, name) => {
+                        const v = Number(value);
+                        if (name === "Variance") return [fmtSigned(v), name];
+                        if (name === `${MA_WINDOW}-pt avg`) return [fmtSigned(v, 2), name];
+                        return [v, name];
+                      }}
+                    />
+
+                    {metric === "variance" ? (
+                      <>
+                        <Bar
+                          dataKey="variance"
+                          name="Variance"
+                          radius={[3, 3, 0, 0]}
+                          maxBarSize={22}
+                          isAnimationActive={false}
+                        >
+                          {series.map((entry, idx) => (
+                            <Cell key={`cell-${idx}`} fill={varianceColor(entry.variance)} />
+                          ))}
+                        </Bar>
+                        <Line
+                          type="monotone"
+                          dataKey="ma"
+                          name={`${MA_WINDOW}-pt avg`}
+                          stroke="#2563EB"
+                          strokeWidth={2}
+                          dot={false}
+                          isAnimationActive={false}
+                        />
+                      </>
+                    ) : (
+                      <>
+                        <Line
+                          type="monotone"
+                          dataKey="current"
+                          name="Current"
+                          stroke="#6B7280"
+                          strokeWidth={2}
+                          dot={{ r: 2 }}
+                          isAnimationActive={false}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="actual"
+                          name="Actual"
+                          stroke="#F59E0B"
+                          strokeWidth={2}
+                          dot={{ r: 2 }}
+                          isAnimationActive={false}
+                        />
+                      </>
+                    )}
+                  </ComposedChart>
+                </ResponsiveContainer>
+              )}
+            </>
           )}
         </div>
 
