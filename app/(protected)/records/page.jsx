@@ -657,6 +657,18 @@ export default function RecordsPage() {
   });
   const [summaryWeek, setSummaryWeek] = useState(0); // 0 = whole month, 1-5 = that week
 
+  // Monthly Summary From / To filter (same behaviour as the History / Tx Log
+  // From / To filter). The *Input values are what's typed in the date
+  // fields; the applied* values are what the summary is actually loaded
+  // with (set by Apply). When either applied value is set, the custom
+  // range replaces the Month / Week range. Picking a Month or Week again
+  // clears the custom range.
+  const [summaryFromInput, setSummaryFromInput] = useState("");
+  const [summaryToInput, setSummaryToInput] = useState("");
+  const [appliedSummaryFrom, setAppliedSummaryFrom] = useState("");
+  const [appliedSummaryTo, setAppliedSummaryTo] = useState("");
+  const hasCustomSummaryRange = !!(appliedSummaryFrom || appliedSummaryTo);
+
   const [histRows, setHistRows] = useState([]);
   const [histLoad, setHistLoad] = useState(false);
   const [histOpen, setHistOpen] = useState(true);
@@ -716,10 +728,10 @@ export default function RecordsPage() {
     if (!wasOffline.current) return;
     wasOffline.current = false;
     loadWarehouseMap(tabRef.current);
-    loadMonthlyProductSummary(tabRef.current, summaryMonthValue, summaryWeek);
+    loadMonthlyProductSummary(tabRef.current, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo);
     loadHistory(tabRef.current, dateFrom, dateTo);
     loadTxLog(tabRef.current, dateFrom, dateTo);
-    if (pivotOpen.size > 0) loadPivotTx(tabRef.current, summaryMonthValue, summaryWeek);
+    if (pivotOpen.size > 0) loadPivotTx(tabRef.current, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offline]);
 
@@ -784,6 +796,22 @@ export default function RecordsPage() {
     };
   }
 
+  // Range used by the Monthly Summary and its pivot. A custom From / To
+  // (either one may be blank) wins over Month / Week. A blank From means
+  // "from the very beginning", a blank To means "up to today".
+  function getSummaryRange(monthValue, week, customFrom, customTo) {
+    if (customFrom || customTo) {
+      const rangeFrom = customFrom || "1970-01-01";
+      const rangeTo = customTo || todayLocal();
+      return {
+        rangeFrom,
+        rangeTo,
+        label: `Period: ${customFrom || "start"} to ${customTo || todayLocal()}`,
+      };
+    }
+    return getMonthWeekRange(monthValue, week);
+  }
+
   // A product can exist in multiple warehouses (see raw_materials_warehouses
   // etc. in the schema), which means the history table can have MULTIPLE
   // rows for the same product on the same date — one per warehouse. Summing
@@ -820,7 +848,7 @@ export default function RecordsPage() {
   }
 
   // Builds one row per product for the given tab, scoped to the selected
-  // month + week (or the whole month if week = 0):
+  // range (Month + Week, or a custom From / To):
   //  - beg_bal    -> the PREVIOUS finalized day's actual_bal, summed across
   //                  every warehouse (the last physically counted total
   //                  before this range starts). Falls back to the summed
@@ -874,7 +902,7 @@ export default function RecordsPage() {
     return all;
   }
 
-  async function loadMonthlyProductSummary(whichTab, monthValue, week) {
+  async function loadMonthlyProductSummary(whichTab, monthValue, week, customFrom = "", customTo = "") {
     // Claim this call as the latest — any earlier in-flight call that
     // resolves after this one will see its own id no longer matches and
     // will skip updating state (see the check right before setMonthlyRows).
@@ -882,7 +910,7 @@ export default function RecordsPage() {
 
     setSummaryLoad(true); setSummaryPage(1);
 
-    const { rangeFrom, rangeTo, label } = getMonthWeekRange(monthValue, week);
+    const { rangeFrom, rangeTo, label } = getSummaryRange(monthValue, week, customFrom, customTo);
     setSummaryMonthLabel(label);
 
     // Look up each product's actual_bal (summed across warehouses) from the
@@ -992,13 +1020,13 @@ export default function RecordsPage() {
   }
 
   // Loads the transaction log for the Monthly Summary's current range
-  // (month + week). Filtered per product on the client so expanding
-  // several products doesn't fire several queries.
-  async function loadPivotTx(whichTab, monthValue, week) {
+  // (Month / Week or custom From / To). Filtered per product on the client
+  // so expanding several products doesn't fire several queries.
+  async function loadPivotTx(whichTab, monthValue, week, customFrom = "", customTo = "") {
     const requestId = ++pivotRequestId.current;
     setPivotLoad(true);
 
-    const { rangeFrom, rangeTo } = getMonthWeekRange(monthValue, week);
+    const { rangeFrom, rangeTo } = getSummaryRange(monthValue, week, customFrom, customTo);
     const fromISO = new Date(`${rangeFrom}T00:00:00`).toISOString();
     const toISO = new Date(`${rangeTo}T23:59:59.999`).toISOString();
 
@@ -1023,13 +1051,13 @@ export default function RecordsPage() {
       next.delete(id);
     } else {
       next.add(id);
-      if (pivotOpen.size === 0) loadPivotTx(tab, summaryMonthValue, summaryWeek);
+      if (pivotOpen.size === 0) loadPivotTx(tab, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo);
     }
     setPivotOpen(next);
   }
 
-  // Pivot follows the Monthly Summary's Month / Week filter.
-  // Tab change closes all pivots; month/week change reloads the open ones.
+  // Pivot follows the Monthly Summary's filter (Month / Week or From / To).
+  // Tab change closes all pivots; a filter change reloads the open ones.
   useEffect(() => {
     const tabChanged = prevTabRef.current !== tab;
     prevTabRef.current = tab;
@@ -1041,10 +1069,10 @@ export default function RecordsPage() {
       setPivotLoad(false);
       return;
     }
-    if (pivotOpen.size > 0) loadPivotTx(tab, summaryMonthValue, summaryWeek);
+    if (pivotOpen.size > 0) loadPivotTx(tab, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo);
     else setPivotRows([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, summaryMonthValue, summaryWeek]);
+  }, [tab, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo]);
 
   // History, tx log, and warehouse map depend on the selected tab + the
   // History/Tx Log date filter (dateFrom/dateTo).
@@ -1055,13 +1083,13 @@ export default function RecordsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
-  // Monthly summary has its OWN filter (month + week-of-month), independent
-  // of the History/Tx Log date range above — reload whenever the tab, the
-  // selected month, or the selected week changes.
+  // Monthly summary has its OWN filter (month + week-of-month, or a custom
+  // From / To), independent of the History/Tx Log date range above —
+  // reload whenever the tab or any part of that filter changes.
   useEffect(() => {
-    loadMonthlyProductSummary(tab, summaryMonthValue, summaryWeek);
+    loadMonthlyProductSummary(tab, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, summaryMonthValue, summaryWeek]);
+  }, [tab, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo]);
 
   // Records is a separate route from Inventory — if a finalize happens
   // there while this page is already open/backgrounded, our React state
@@ -1070,7 +1098,7 @@ export default function RecordsPage() {
   // shows current data without needing a manual reload.
   useEffect(() => {
     function handleFocus() {
-      loadMonthlyProductSummary(tabRef.current, summaryMonthValue, summaryWeek);
+      loadMonthlyProductSummary(tabRef.current, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo);
       loadHistory(tabRef.current, dateFrom, dateTo);
       loadTxLog(tabRef.current, dateFrom, dateTo);
     }
@@ -1084,7 +1112,7 @@ export default function RecordsPage() {
       document.removeEventListener("visibilitychange", handleVisibility);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateFrom, dateTo, summaryMonthValue, summaryWeek]);
+  }, [dateFrom, dateTo, summaryMonthValue, summaryWeek, appliedSummaryFrom, appliedSummaryTo]);
 
   function applyDateFilter() {
     loadHistory(tab, dateFrom, dateTo);
@@ -1095,6 +1123,17 @@ export default function RecordsPage() {
     setDateFrom(""); setDateTo("");
     loadHistory(tab, "", "");
     loadTxLog(tab, "", "");
+  }
+
+  // Monthly Summary From / To
+  function applySummaryRange() {
+    setAppliedSummaryFrom(summaryFromInput);
+    setAppliedSummaryTo(summaryToInput);
+  }
+
+  function clearSummaryRange() {
+    setSummaryFromInput(""); setSummaryToInput("");
+    setAppliedSummaryFrom(""); setAppliedSummaryTo("");
   }
 
   function resolveWarehouse(row) {
@@ -1229,9 +1268,10 @@ export default function RecordsPage() {
       </div>
 
       {/* Monthly per-product summary — one row per product for the selected
-          tab, with its OWN Month + Week-of-month filter (independent of the
-          History/Tx Log date range below). Beg Bal = first day of the
-          selected range, Current/Actual Bal = last day of the range. */}
+          tab, with its OWN filter (Month + Week-of-month, or a custom
+          From / To) independent of the History/Tx Log date range below.
+          Beg Bal = balance before the range starts, Current/Actual Bal =
+          last day of the range. */}
       <div className="mb-5">
         <div className="bg-white border border-gray-200 rounded-lg shadow-sm overflow-hidden">
           <SectionHeader
@@ -1265,14 +1305,20 @@ export default function RecordsPage() {
                 <input
                   type="month"
                   value={summaryMonthValue}
-                  onChange={(e) => setSummaryMonthValue(e.target.value)}
-                  className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  onChange={(e) => {
+                    setSummaryMonthValue(e.target.value);
+                    clearSummaryRange();
+                  }}
+                  className={`border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500 ${hasCustomSummaryRange ? "opacity-50" : ""}`}
                 />
                 <label className="text-xs text-black font-semibold ml-2">Week</label>
                 <select
                   value={summaryWeek}
-                  onChange={(e) => setSummaryWeek(Number(e.target.value))}
-                  className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  onChange={(e) => {
+                    setSummaryWeek(Number(e.target.value));
+                    clearSummaryRange();
+                  }}
+                  className={`border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500 ${hasCustomSummaryRange ? "opacity-50" : ""}`}
                 >
                   <option value={0}>Whole month</option>
                   <option value={1}>Week 1</option>
@@ -1281,6 +1327,27 @@ export default function RecordsPage() {
                   <option value={4}>Week 4</option>
                   <option value={5}>Week 5</option>
                 </select>
+
+                <div className="w-px h-6 bg-gray-200 mx-1" />
+
+                <label className="text-xs text-black font-semibold">From</label>
+                <input type="date" value={summaryFromInput} max={summaryToInput || todayLocal()}
+                  onChange={(e) => setSummaryFromInput(e.target.value)}
+                  className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <label className="text-xs text-black font-semibold">To</label>
+                <input type="date" value={summaryToInput} min={summaryFromInput || undefined} max={todayLocal()}
+                  onChange={(e) => setSummaryToInput(e.target.value)}
+                  className="border border-gray-300 rounded-md px-2 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <button onClick={applySummaryRange}
+                  className="px-3 py-1.5 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium transition-colors">
+                  Apply
+                </button>
+                {(summaryFromInput || summaryToInput || hasCustomSummaryRange) && (
+                  <button onClick={clearSummaryRange}
+                    className="px-3 py-1.5 rounded-md bg-white border border-gray-200 text-black hover:bg-gray-50 text-sm transition-colors">
+                    Clear
+                  </button>
+                )}
               </div>
 
               <p className="px-4 pt-2 text-xs text-gray-500">
