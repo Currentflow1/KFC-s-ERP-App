@@ -2,9 +2,20 @@
 
 import { useEffect, useState, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabaseClient";
+import { getCache, setCache } from "@/lib/sync";
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+
+function isOnline() {
+  return typeof navigator === "undefined" ? true : navigator.onLine;
+}
+
+const HISTORY_TABLE_BY_TAB = {
+  raw:       "raw_materials_inventory_history",
+  finished:  "finished_products_inventory_history",
+  packaging: "packaging_inventory_history",
+};
 
 export default function InventoryCalendar({ tab, date, onSelectDate }) {
   const supabase = useMemo(() => createClient(), []);
@@ -19,6 +30,14 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
 
   useEffect(() => { loadAvailableDates(); }, [tab]);
 
+  // Reload when the connection comes back so the dots refresh.
+  useEffect(() => {
+    function handleOnline() { loadAvailableDates(); }
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
   useEffect(() => {
     function handler(e) {
       if (containerRef.current && !containerRef.current.contains(e.target)) setOpen(false);
@@ -27,10 +46,33 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  function applyDates(dates) {
+    setAvailableDates(dates);
+
+    // If there are dates but no month is showing any dots, jump the calendar
+    // to the most recent month that has data so the user sees something immediately.
+    if (dates.size > 0 && !date) {
+      const sorted = [...dates].sort().reverse();
+      const latest = sorted[0];
+      const latestDate = new Date(latest + "T00:00:00");
+      setViewMonth(new Date(latestDate.getFullYear(), latestDate.getMonth(), 1));
+    }
+  }
+
+  async function loadFromCache(cacheKey) {
+    const cached = await getCache(cacheKey);
+    if (Array.isArray(cached)) applyDates(new Set(cached));
+  }
+
   async function loadAvailableDates() {
-    const table = tab === "finished"
-      ? "finished_products_inventory_history"
-      : "raw_materials_inventory_history";
+    const table = HISTORY_TABLE_BY_TAB[tab] ?? HISTORY_TABLE_BY_TAB.raw;
+    const cacheKey = `inventoryCalendar:dates:${table}`;
+
+    // Offline: use the last saved list and skip the request entirely.
+    if (!isOnline()) {
+      await loadFromCache(cacheKey);
+      return;
+    }
 
     // Fetch all pages so we never miss dates when there are many products.
     // Each date appears once per inventory row, so we paginate until exhausted.
@@ -46,8 +88,14 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
         .range(page * PAGE, (page + 1) * PAGE - 1);
 
       if (error) {
-        console.error("[InventoryCalendar] loadAvailableDates error:", error.message);
-        break;
+        // A dropped connection isn't a real failure: fall back to the saved
+        // list instead of logging an error or wiping the dots.
+        if (/failed to fetch|network/i.test(error.message ?? "")) {
+          await loadFromCache(cacheKey);
+        } else {
+          console.error("[InventoryCalendar] loadAvailableDates error:", error.message);
+        }
+        return;
       }
 
       (data || []).forEach((r) => { if (r.inventory_date) allDates.add(r.inventory_date); });
@@ -57,16 +105,8 @@ export default function InventoryCalendar({ tab, date, onSelectDate }) {
       page++;
     }
 
-    setAvailableDates(allDates);
-
-    // If there are dates but no month is showing any dots, jump the calendar
-    // to the most recent month that has data so the user sees something immediately.
-    if (allDates.size > 0 && !date) {
-      const sorted = [...allDates].sort().reverse();
-      const latest = sorted[0];
-      const latestDate = new Date(latest + "T00:00:00");
-      setViewMonth(new Date(latestDate.getFullYear(), latestDate.getMonth(), 1));
-    }
+    applyDates(allDates);
+    setCache(cacheKey, [...allDates]);
   }
 
   function changeMonth(offset) {

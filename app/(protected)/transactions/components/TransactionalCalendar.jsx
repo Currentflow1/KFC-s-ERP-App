@@ -2,9 +2,20 @@
 
 import { useEffect, useState, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabaseClient";
+import { getCache, setCache } from "@/lib/sync";
 
 function pad(n) { return n.toString().padStart(2, "0"); }
 function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+
+function isOnline() {
+  return typeof navigator === "undefined" ? true : navigator.onLine;
+}
+
+const TX_TABLE_BY_TYPE = {
+  raw:       "raw_materials_transaction_log",
+  finished:  "finished_products_transaction_log",
+  packaging: "packaging_transaction_log",
+};
 
 /**
  * Calendar for the Transaction Logs page.
@@ -13,6 +24,9 @@ function toDateString(d) { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-$
  * "has activity" dates from the transaction log table itself (grouped by
  * day) instead of an inventory_history table, since transaction logs
  * don't have daily snapshots — every row IS the activity.
+ *
+ * Offline: the list of activity dates is saved after each successful load
+ * and reused when the browser is offline or a request fails.
  */
 export default function TransactionCalendar({ productType, date, onSelectDate }) {
   const supabase = useMemo(() => createClient(), []);
@@ -27,6 +41,14 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
 
   useEffect(() => { loadAvailableDates(); }, [productType]);
 
+  // Reload when the connection comes back so the dots refresh.
+  useEffect(() => {
+    function handleOnline() { loadAvailableDates(); }
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [productType]);
+
   // Close on outside click — matches InventoryCalendar behavior
   useEffect(() => {
     function handler(e) {
@@ -36,10 +58,20 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
+  async function loadFromCache(cacheKey) {
+    const cached = await getCache(cacheKey);
+    if (Array.isArray(cached)) setAvailableDates(new Set(cached));
+  }
+
   async function loadAvailableDates() {
-    const table = productType === "finished"
-      ? "finished_products_transaction_log"
-      : "raw_materials_transaction_log";
+    const table = TX_TABLE_BY_TYPE[productType] ?? TX_TABLE_BY_TYPE.raw;
+    const cacheKey = `transactionCalendar:dates:${table}`;
+
+    // Offline: use the last saved list and skip the request entirely.
+    if (!isOnline()) {
+      await loadFromCache(cacheKey);
+      return;
+    }
 
     // Paginate so we don't silently miss dates past Supabase's default
     // 1000-row cap when a table has more rows than that.
@@ -55,8 +87,14 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
         .range(page * PAGE, (page + 1) * PAGE - 1);
 
       if (error) {
-        console.error("[TransactionCalendar] loadAvailableDates error:", error.message);
-        break;
+        // A dropped connection isn't a real failure: fall back to the saved
+        // list instead of logging an error or wiping the dots.
+        if (/failed to fetch|network|load failed/i.test(error.message ?? "")) {
+          await loadFromCache(cacheKey);
+        } else {
+          console.error("[TransactionCalendar] loadAvailableDates error:", error.message);
+        }
+        return;
       }
 
       (data || []).forEach((r) => {
@@ -68,6 +106,7 @@ export default function TransactionCalendar({ productType, date, onSelectDate })
     }
 
     setAvailableDates(allDates);
+    setCache(cacheKey, [...allDates]);
   }
 
   function changeMonth(offset) {

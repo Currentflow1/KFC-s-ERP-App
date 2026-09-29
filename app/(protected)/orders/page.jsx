@@ -2,6 +2,9 @@
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabaseClient";
+import { db } from "@/lib/db";
+import { enqueueOp, flushOutbox, OP_PENDING, OP_REJECTED } from "@/lib/outbox";
+import { getCache, setCache } from "@/lib/sync";
 
 const PRODUCT_TYPE = { RAW: "raw", FINISHED: "finished", PACKAGING: "packaging" };
 const STOCK_TYPE   = { INCOMING: "incoming", OUTGOING: "outgoing" };
@@ -53,6 +56,27 @@ function emptyForm() {
 function todayLocal() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// ── Offline outbox helpers ────────────────────────────────────────────────
+// Orders that were added offline and are still waiting in the outbox.
+async function getQueuedOrders(txTable) {
+  try {
+    const ops = await db.outbox.where("status").anyOf(OP_PENDING, OP_REJECTED).sortBy("id");
+    return ops
+      .filter((op) => op.payload?.tx_table === txTable)
+      .flatMap((op) =>
+        (op.payload.tx_logs ?? [])
+          .filter((t) => t.transaction_source === "ordered")
+          .map((t) => ({ ...t, _queued: true, _opStatus: op.status, _opError: op.last_error }))
+      );
+  } catch { return []; }
+}
+
+async function removeQueuedOrder(txId) {
+  const ops = await db.outbox.where("status").anyOf(OP_PENDING, OP_REJECTED).toArray();
+  const op = ops.find((o) => (o.payload?.tx_logs ?? []).some((t) => t.id === txId));
+  if (op) await db.outbox.delete(op.id);
 }
 
 function ConfirmModal({ message, onConfirm, onCancel }) {
@@ -284,10 +308,11 @@ export default function OrderTable() {
 
   useEffect(() => {
     async function loadUser() {
-      if (!isOnline()) return;
+      if (!isOnline()) { setUserId(await getCache("userId")); return; }
       try {
         const { data: { user } } = await supabase.auth.getUser();
         setUserId(user?.id ?? null);
+        if (user?.id) setCache("userId", user.id);
       } catch (e) {
         console.error("[OrderTable] failed to load current user:", e.message);
       }
@@ -299,7 +324,12 @@ export default function OrderTable() {
   // ── Check if today is already finalized ───────────────────────────────────
 
   async function checkIfTodayFinalized() {
-    if (!isOnline()) return;
+    const key = `orderTable:finalized:${histTableName}:${todayLocal()}`;
+    if (!isOnline()) {
+      const cached = await getCache(key);
+      if (cached !== null) setIsFinalized(!!cached);
+      return;
+    }
     setCheckingFinalization(true);
     try {
       const { data, error } = await supabase
@@ -308,7 +338,9 @@ export default function OrderTable() {
         .eq("inventory_date", todayLocal())
         .limit(1);
       if (error) throw error;
-      setIsFinalized(!!(data && data.length > 0));
+      const done = !!(data && data.length > 0);
+      setIsFinalized(done);
+      setCache(key, done);
     } catch (e) {
       console.error("Failed to check finalization status:", e.message);
     } finally {
@@ -330,14 +362,44 @@ export default function OrderTable() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType, stockType]);
 
+  // ── Auto-sync when the connection returns ─────────────────────────────────
+
+  const wasOffline = useRef(false);
+  useEffect(() => {
+    if (offline) { wasOffline.current = true; return; }
+    if (!wasOffline.current) return;
+    wasOffline.current = false;
+    (async () => {
+      await flushOutbox();
+      await fetchOptions();
+      await fetchRows();
+      await checkIfTodayFinalized();
+    })();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offline]);
+
   // ── Fetch dropdown options ────────────────────────────────────────────────
   // Only active (non-discontinued) products are fetched via !inner join filtering.
   // Warehouse is fetched from junction tables joined to the static table,
   // producing { name, warehouse } pairs. Discontinued products are excluded
   // at the database level using the !inner join + .eq() filter.
+  // Results are cached so the form still works offline.
 
   async function fetchOptions() {
-    if (!isOnline()) return;
+    if (!isOnline()) {
+      const c = await getCache("orderTable:options");
+      if (c) {
+        setMonitoringOptions(c.monitoring ?? []);
+        setRepresentativeOptions(c.representative ?? []);
+        setStaffOptions(c.staff ?? []);
+        setSupplierOptions(c.supplier ?? []);
+        setRawProducts(c.raw ?? []);
+        setFinishedProducts(c.finished ?? []);
+        setPackagingProducts(c.packaging ?? []);
+      }
+      return;
+    }
+
     const [mon, rep, staff, sup, rawJunction, finJunction, pkgJunction] = await Promise.all([
       supabase.from("monitoring_employee").select("name"),
       supabase.from("representative_employee").select("name"),
@@ -360,51 +422,74 @@ export default function OrderTable() {
         .eq("packaging_static.discontinued", false),
     ]);
 
-    setMonitoringOptions(mon.data?.map((r) => r.name) ?? []);
-    setRepresentativeOptions(rep.data?.map((r) => r.name) ?? []);
-    setStaffOptions(staff.data?.map((r) => r.name) ?? []);
-    setSupplierOptions(
-      (sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A")
-    );
+    const monitoring     = mon.data?.map((r) => r.name) ?? [];
+    const representative = rep.data?.map((r) => r.name) ?? [];
+    const staffNames     = staff.data?.map((r) => r.name) ?? [];
+    const supplier       = (sup.data?.map((r) => r.contact_person) ?? []).filter((n) => n !== "N/A");
 
     // Flatten junction rows into { name, warehouse } pairs — only active products
-    setRawProducts(
-      (rawJunction.data ?? [])
-        .filter((r) => r.raw_materials_static?.name && !r.raw_materials_static?.discontinued)
-        .map((r) => ({ name: r.raw_materials_static.name, warehouse: r.warehouse }))
-    );
+    const raw = (rawJunction.data ?? [])
+      .filter((r) => r.raw_materials_static?.name && !r.raw_materials_static?.discontinued)
+      .map((r) => ({ name: r.raw_materials_static.name, warehouse: r.warehouse }));
+    const finished = (finJunction.data ?? [])
+      .filter((r) => r.finished_products_static?.name && !r.finished_products_static?.discontinued)
+      .map((r) => ({ name: r.finished_products_static.name, warehouse: r.warehouse }));
+    const packaging = (pkgJunction.data ?? [])
+      .filter((r) => r.packaging_static?.name && !r.packaging_static?.discontinued)
+      .map((r) => ({ name: r.packaging_static.name, warehouse: r.warehouse }));
 
-    setFinishedProducts(
-      (finJunction.data ?? [])
-        .filter((r) => r.finished_products_static?.name && !r.finished_products_static?.discontinued)
-        .map((r) => ({ name: r.finished_products_static.name, warehouse: r.warehouse }))
-    );
+    setMonitoringOptions(monitoring);
+    setRepresentativeOptions(representative);
+    setStaffOptions(staffNames);
+    setSupplierOptions(supplier);
+    setRawProducts(raw);
+    setFinishedProducts(finished);
+    setPackagingProducts(packaging);
 
-    setPackagingProducts(
-      (pkgJunction.data ?? [])
-        .filter((r) => r.packaging_static?.name && !r.packaging_static?.discontinued)
-        .map((r) => ({ name: r.packaging_static.name, warehouse: r.warehouse }))
-    );
+    setCache("orderTable:options", {
+      monitoring, representative, staff: staffNames, supplier, raw, finished, packaging,
+    });
+
+    // Cache inventory ids so orders can be tied to an inventory row while offline.
+    try {
+      const [r, f, p] = await Promise.all(
+        ["raw", "finished", "packaging"].map((k) =>
+          supabase.from(TAB_CONFIG[k].inv).select("id, name, warehouse")
+        )
+      );
+      if (!r.error && !f.error && !p.error) {
+        setCache("orderTable:invIds", { raw: r.data, finished: f.data, packaging: p.data });
+      }
+    } catch (e) { console.error("[OrderTable] inventory id cache failed:", e.message); }
   }
 
   // ── Fetch pending orders ──────────────────────────────────────────────────
+  // Server rows (or the cached copy when offline) plus any orders still
+  // waiting in the local outbox.
 
   async function fetchRows() {
-    if (!isOnline()) {
-      setError("You're offline — Order Table requires an internet connection.");
-      return;
-    }
     setLoading(true);
     setError(null);
     try {
-      const { data, error: e } = await supabase
-        .from(txTableName)
-        .select("*")
-        .is("finalized_at", null)
-        .is("removed_at", null)
-        .order("created_at", { ascending: false });
-      if (e) throw e;
-      setRows(data ?? []);
+      const cacheKey = `orderTable:rows:${txTableName}`;
+      let serverRows;
+      if (isOnline()) {
+        const { data, error: e } = await supabase
+          .from(txTableName)
+          .select("*")
+          .is("finalized_at", null)
+          .is("removed_at", null)
+          .order("created_at", { ascending: false });
+        if (e) throw e;
+        serverRows = data ?? [];
+        setCache(cacheKey, serverRows);
+      } else {
+        serverRows = (await getCache(cacheKey)) ?? [];
+      }
+      const queued = (await getQueuedOrders(txTableName))
+        .filter((q) => !serverRows.some((r) => r.id === q.id))
+        .reverse(); // newest first
+      setRows([...queued, ...serverRows]);
     } catch (e) {
       setError(e.message);
     } finally {
@@ -457,15 +542,28 @@ export default function OrderTable() {
   // unique constraint on that pair). That could attach an order to the
   // wrong physical row and desync balances everywhere downstream. Now it
   // fails loudly instead of guessing.
+  // Offline, it reads from the cached inventory id list instead.
   async function resolveInventoryId(productName, warehouse) {
-    const { data, error } = await supabase
-      .from(invTableName)
-      .select("id")
-      .eq("name", productName)
-      .eq("warehouse", warehouse);
-    if (error) throw new Error(`Inventory lookup failed: ${error.message}`);
+    let data;
+    if (isOnline()) {
+      const res = await supabase
+        .from(invTableName)
+        .select("id")
+        .eq("name", productName)
+        .eq("warehouse", warehouse);
+      if (res.error) throw new Error(`Inventory lookup failed: ${res.error.message}`);
+      data = res.data;
+    } else {
+      const cache = await getCache("orderTable:invIds");
+      data = (cache?.[productType] ?? []).filter(
+        (r) => r.name === productName && r.warehouse === warehouse
+      );
+    }
     if (!data || data.length === 0) {
-      throw new Error(`No inventory row found for "${productName}" in warehouse "${warehouse}".`);
+      throw new Error(
+        `No inventory row found for "${productName}" in warehouse "${warehouse}".` +
+        (isOnline() ? "" : " (Offline: the saved inventory list may be out of date — reconnect and try again.)")
+      );
     }
     if (data.length > 1) {
       throw new Error(
@@ -528,7 +626,6 @@ export default function OrderTable() {
 
   async function handleAdd() {
     if (isFinalized) { setError("⚠️ Today is already finalized. Undo finalize to add orders."); return; }
-    if (!isOnline())  { setError("You're offline — reconnect to add an order."); return; }
     setError(null);
     const qty = Number(isIncoming ? formData.incoming_bal : formData.outgoing_bal);
 
@@ -543,7 +640,8 @@ export default function OrderTable() {
     try {
       const inventory_id = await resolveInventoryId(formData.product_name, formData.warehouse);
 
-      if (!isIncoming) {
+      // The stock check needs the server, so it only runs when online.
+      if (!isIncoming && isOnline()) {
         const ok = await confirmOutgoingWithinStock(inventory_id, qty, formData.product_name);
         if (!ok) { setSaving(false); return; }
       }
@@ -562,11 +660,23 @@ export default function OrderTable() {
         created_by:               userId,
         ...(tabCfg.hasSupplier ? { supplier_name: isIncoming ? formData.supplier_name : null } : {}),
       };
-      const { error: insertError } = await supabase.from(txTableName).insert([payload]);
-      if (insertError) throw insertError;
-      resetForm();
-      await fetchRows();
-      showSuccess("Order added.");
+
+      if (isOnline()) {
+        const { error: insertError } = await supabase.from(txTableName).insert([payload]);
+        if (insertError) throw insertError;
+        resetForm();
+        await fetchRows();
+        showSuccess("Order added.");
+      } else {
+        // Offline: queue it in the outbox. It syncs in order when we reconnect.
+        await enqueueOp({
+          tab: productType,
+          txLogs: [{ ...payload, created_at: new Date().toISOString() }],
+        });
+        resetForm();
+        await fetchRows();
+        showSuccess("Saved offline — will sync when you're back online.");
+      }
     } catch (e) {
       setError(e.message);
     } finally {
@@ -621,9 +731,24 @@ export default function OrderTable() {
   // ── DELETE (soft) ─────────────────────────────────────────────────────────
 
   async function confirmDelete() {
+    const id = deleteTarget;
+    const target = rows.find((r) => r.id === id);
+
+    // Orders still waiting in the outbox were never sent to the server,
+    // so deleting one just removes it from the local queue.
+    if (target?._queued) {
+      setDeleteTarget(null);
+      setError(null);
+      try {
+        await removeQueuedOrder(id);
+        await fetchRows();
+        showSuccess("Queued order removed.");
+      } catch (e) { setError(e.message); }
+      return;
+    }
+
     if (isFinalized) { setError("⚠️ Today is already finalized. Undo finalize to delete orders."); setDeleteTarget(null); return; }
     if (!isOnline())  { setError("You're offline — reconnect to delete this order."); setDeleteTarget(null); return; }
-    const id = deleteTarget;
     setDeleteTarget(null);
     setError(null);
     try {
@@ -673,7 +798,7 @@ export default function OrderTable() {
 
       {offline && (
         <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
-          <span className="font-semibold">You're offline.</span> Order Table requires an internet connection.
+          <span className="font-semibold">You're offline.</span> Orders you add are saved on this device and sent automatically when you reconnect.
         </div>
       )}
 
@@ -739,40 +864,40 @@ export default function OrderTable() {
             label="Warehouse"
             value={formData.warehouse}
             options={warehouseOptions}
-            disabled={offline || isFinalized || warehouseOptions.length === 0}
+            disabled={isFinalized || warehouseOptions.length === 0}
             placeholder={warehouseOptions.length === 0 ? "No warehouses set" : "All warehouses"}
             onChange={handleWarehouseChange}
           />
           <SearchableSelect label="Monitoring" value={formData.monitoring_employee}
-            options={monitoringOptions} disabled={offline || isFinalized}
+            options={monitoringOptions} disabled={isFinalized}
             onChange={(v) => setFormData((p) => ({ ...p, monitoring_employee: v }))} />
           {!isIncoming && (
             <SearchableSelect label="Representative" value={formData.representative_employee}
-              options={representativeOptions} disabled={offline || isFinalized}
+              options={representativeOptions} disabled={isFinalized}
               onChange={(v) => setFormData((p) => ({ ...p, representative_employee: v }))} />
           )}
           {!isIncoming && (
             <SearchableSelect label="Staff" value={formData.staff_employee}
-              options={staffOptions} disabled={offline || isFinalized}
+              options={staffOptions} disabled={isFinalized}
               onChange={(v) => setFormData((p) => ({ ...p, staff_employee: v }))} />
           )}
           {showSupplier && (
             <SearchableSelect label="Supplier" value={formData.supplier_name}
-              options={supplierOptions} disabled={offline || isFinalized}
+              options={supplierOptions} disabled={isFinalized}
               onChange={(v) => setFormData((p) => ({ ...p, supplier_name: v }))} />
           )}
           <SearchableSelect
             label={formData.warehouse ? `Product (${formData.warehouse})` : "Product"}
             value={formData.product_name}
             options={productOptions}
-            disabled={offline || isFinalized}
+            disabled={isFinalized}
             onChange={(v) => setFormData((p) => ({ ...p, product_name: v }))}
           />
           <div className="flex flex-col gap-1">
             <label className="text-xs font-medium uppercase tracking-wide text-black">
               {isIncoming ? "Incoming Qty" : "Outgoing Qty"}
             </label>
-            <input type="number" min="0" placeholder="0" disabled={offline || isFinalized}
+            <input type="number" min="0" placeholder="0" disabled={isFinalized}
               className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-black focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-100 disabled:text-gray-400 disabled:cursor-not-allowed"
               value={isIncoming ? formData.incoming_bal : formData.outgoing_bal}
               onChange={(e) => setFormData((p) => ({
@@ -783,7 +908,7 @@ export default function OrderTable() {
         </div>
 
         <div className="mt-4 flex justify-end">
-          <button onClick={handleAdd} disabled={saving || offline || isFinalized}
+          <button onClick={handleAdd} disabled={saving || isFinalized}
             title={isFinalized ? "Order Table is locked — undo finalize to add orders" : ""}
             className="px-5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
             {saving ? "Saving…" : "Add Order"}
@@ -815,9 +940,7 @@ export default function OrderTable() {
         </div>
 
         <div className="overflow-x-auto">
-          {offline ? (
-            <div className="px-4 py-8 text-sm text-black text-center">Reconnect to view and manage orders.</div>
-          ) : loading ? (
+          {loading ? (
             <div className="px-4 py-4 text-sm text-black">Loading…</div>
           ) : filteredRows.length === 0 ? (
             <div className="px-4 py-8 text-sm text-black text-center">
@@ -899,9 +1022,19 @@ export default function OrderTable() {
                       </td>
                       <td className="px-4 py-3 text-xs text-black whitespace-nowrap">
                         {new Date(row.created_at).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" })}
+                        {row._queued && (
+                          <div className={`mt-1 ${row._opStatus === "rejected" ? "text-red-600" : "text-amber-600"}`}>
+                            {row._opStatus === "rejected" ? `Rejected: ${row._opError}` : "Queued — not synced yet"}
+                          </div>
+                        )}
                       </td>
                       <td className="px-4 py-3">
-                        {isEditing ? (
+                        {row._queued ? (
+                          <button onClick={() => setDeleteTarget(row.id)}
+                            className="px-3 py-1.5 text-xs font-medium bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-md transition-colors">
+                            Delete
+                          </button>
+                        ) : isEditing ? (
                           <div className="inline-flex items-center gap-1">
                             <button onClick={() => handleEditSave(row.id)} disabled={saving || offline || isFinalized}
                               className="px-3 py-1.5 text-xs font-medium bg-green-600 hover:bg-green-700 text-white rounded-md transition-colors disabled:opacity-60 disabled:cursor-not-allowed">Save</button>

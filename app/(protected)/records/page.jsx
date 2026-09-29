@@ -2,10 +2,21 @@
 
 import { useEffect, useState, useRef, Fragment } from "react";
 import { createClient } from "@/lib/supabaseClient";
+import { getCache, setCache } from "@/lib/sync";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
 function isoDate(d) { return d.toISOString().slice(0, 10); }
+
+function isOnline() {
+  return typeof navigator === "undefined" ? true : navigator.onLine;
+}
+
+// A dropped connection surfaces from supabase-js as an error object whose
+// message is "TypeError: Failed to fetch" (it does not throw).
+function isNetworkError(msg) {
+  return /failed to fetch|network|load failed/i.test(msg ?? "");
+}
 
 function todayLocal() {
   const d = new Date();
@@ -627,6 +638,10 @@ export default function RecordsPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
+  // Offline: data comes from the last saved copy instead of the server.
+  const [offline, setOffline] = useState(false);
+  const wasOffline = useRef(false);
+
   // Monthly per-product summary table for the currently selected tab.
   // Each row = one product: beg_bal is its balance on the 1st of the
   // month, incoming/outgoing are summed across every finalized day this
@@ -681,15 +696,53 @@ export default function RecordsPage() {
   // the most recent one, so only its response is allowed to update state.
   const summaryRequestId = useRef(0);
 
+  // ── offline detection ─────────────────────────────────────────────────────
+
+  useEffect(() => {
+    setOffline(!isOnline());
+    function handleOffline() { setOffline(true); }
+    function handleOnline()  { setOffline(false); }
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
+    return () => {
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
+    };
+  }, []);
+
+  // Refresh everything from the server once the connection returns.
+  useEffect(() => {
+    if (offline) { wasOffline.current = true; return; }
+    if (!wasOffline.current) return;
+    wasOffline.current = false;
+    loadWarehouseMap(tabRef.current);
+    loadMonthlyProductSummary(tabRef.current, summaryMonthValue, summaryWeek);
+    loadHistory(tabRef.current, dateFrom, dateTo);
+    loadTxLog(tabRef.current, dateFrom, dateTo);
+    if (pivotOpen.size > 0) loadPivotTx(tabRef.current, summaryMonthValue, summaryWeek);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [offline]);
+
   // ── warehouse map ─────────────────────────────────────────────────────────
 
   async function loadWarehouseMap(whichTab) {
+    const cacheKey = `records:whmap:${whichTab}`;
+
+    if (!isOnline()) {
+      setInventoryWarehouseMap((await getCache(cacheKey)) ?? {});
+      return;
+    }
+
     const { data, error } = await supabase
       .from(invTable(whichTab))
       .select("id, warehouse");
     if (error) {
-      console.error("[loadWarehouseMap] error:", error.message);
-      setInventoryWarehouseMap({});
+      if (isNetworkError(error.message)) {
+        setInventoryWarehouseMap((await getCache(cacheKey)) ?? {});
+      } else {
+        console.error("[loadWarehouseMap] error:", error.message);
+        setInventoryWarehouseMap({});
+      }
       return;
     }
     const map = {};
@@ -697,6 +750,7 @@ export default function RecordsPage() {
       if (row.warehouse) map[row.id] = row.warehouse;
     });
     setInventoryWarehouseMap(map);
+    setCache(cacheKey, map);
   }
 
   // ── data loaders ──────────────────────────────────────────────────────────
@@ -787,18 +841,36 @@ export default function RecordsPage() {
   // guaranteed to return everything. This loop keeps requesting subsequent
   // pages until nothing more comes back, so large history tables (many
   // products × many warehouses × many days) never get silently cut off.
-  async function fetchAllRows(buildQuery) {
+  //
+  // OFFLINE: every complete result is saved under `cacheKey`. When the
+  // browser is offline (or a request fails with a network error) the saved
+  // copy is returned instead, so the page keeps showing the last data it
+  // loaded. Partial results from a failed load are never saved.
+  async function fetchAllRows(buildQuery, cacheKey) {
+    if (!isOnline()) {
+      return (cacheKey && (await getCache(cacheKey))) || [];
+    }
+
     const PAGE_SIZE = 500;
     let offset = 0;
     let all = [];
     while (true) {
       const { data, error } = await buildQuery().range(offset, offset + PAGE_SIZE - 1);
-      if (error) { console.error("[fetchAllRows] error:", error.message); break; }
+      if (error) {
+        if (isNetworkError(error.message)) {
+          // Connection dropped: fall back to the saved copy, no console error.
+          return (cacheKey && (await getCache(cacheKey))) || [];
+        }
+        console.error("[fetchAllRows] error:", error.message);
+        return all; // real query error: keep previous behaviour (partial, not cached)
+      }
       const page = data || [];
       all = all.concat(page);
       if (page.length < PAGE_SIZE) break; // short page = no more data left
       offset += PAGE_SIZE;
     }
+
+    if (cacheKey) setCache(cacheKey, all);
     return all;
   }
 
@@ -821,7 +893,8 @@ export default function RecordsPage() {
         .from(historyTable(whichTab))
         .select("name, inventory_date, actual_bal")
         .lt("inventory_date", rangeFrom)
-        .order("inventory_date", { ascending: true })
+        .order("inventory_date", { ascending: true }),
+      `records:prior:${whichTab}:${rangeFrom}`
     );
 
     const priorAggregated = aggregateByProductDate(priorData || []);
@@ -841,7 +914,8 @@ export default function RecordsPage() {
         .select("inventory_id, name, inventory_date, beg_bal, incoming_bal, outgoing_bal, current_bal, actual_bal")
         .gte("inventory_date", rangeFrom)
         .lte("inventory_date", rangeTo)
-        .order("inventory_date", { ascending: true })
+        .order("inventory_date", { ascending: true }),
+      `records:month:${whichTab}:${rangeFrom}:${rangeTo}`
     );
 
     const aggregatedRows = aggregateByProductDate(data || []);
@@ -897,7 +971,7 @@ export default function RecordsPage() {
       if (from) q = q.gte("inventory_date", from);
       if (to) q = q.lte("inventory_date", to);
       return q;
-    });
+    }, `records:hist:${whichTab}:${from || ""}:${to || ""}`);
     setHistRows(data || []);
     setHistLoad(false);
   }
@@ -906,11 +980,13 @@ export default function RecordsPage() {
     setTxLoad(true); setTxPage(1);
     // NOTE: removed_at filter intentionally omitted — we want ALL rows including
     // deleted / undone / reverted so the status badges are visible in the log.
-    let q = supabase.from(txLogTable(whichTab)).select("*")
-      .order("created_at", { ascending: false });
-    if (from) q = q.gte("created_at", from);
-    if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
-    const { data } = await q;
+    const data = await fetchAllRows(() => {
+      let q = supabase.from(txLogTable(whichTab)).select("*")
+        .order("created_at", { ascending: false });
+      if (from) q = q.gte("created_at", from);
+      if (to) q = q.lte("created_at", to + "T23:59:59.999Z");
+      return q;
+    }, `records:tx:${whichTab}:${from || ""}:${to || ""}`);
     setTxRows(data || []);
     setTxLoad(false);
   }
@@ -932,7 +1008,8 @@ export default function RecordsPage() {
         .select("*")
         .gte("created_at", fromISO)
         .lte("created_at", toISO)
-        .order("created_at", { ascending: true })
+        .order("created_at", { ascending: true }),
+      `records:pivot:${whichTab}:${rangeFrom}:${rangeTo}`
     );
 
     if (requestId !== pivotRequestId.current) return; // stale response
@@ -1072,6 +1149,12 @@ export default function RecordsPage() {
 
   return (
     <div className="px-6 py-5 bg-gray-50 min-h-screen">
+
+      {offline && (
+        <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-700">
+          <span className="font-semibold">You're offline.</span> Showing the last saved records. Anything not opened before while online won't appear until you reconnect.
+        </div>
+      )}
 
       {/* Page header */}
       <div className="mb-5 flex items-start justify-between gap-4">
