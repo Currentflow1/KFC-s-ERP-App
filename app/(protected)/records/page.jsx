@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, Fragment } from "react";
 import { createClient } from "@/lib/supabaseClient";
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
@@ -663,6 +663,13 @@ export default function RecordsPage() {
   const [summaryPage, setSummaryPage] = useState(1);
   const PAGE = 20;
 
+  // ── Pivot (per-product transaction history inside Monthly Summary) ──
+  const [pivotOpen, setPivotOpen] = useState(() => new Set()); // product ids that are expanded
+  const [pivotRows, setPivotRows] = useState([]);              // tx log rows for the current range
+  const [pivotLoad, setPivotLoad] = useState(false);
+  const pivotRequestId = useRef(0);
+  const prevTabRef = useRef("raw");
+
   const tabRef = useRef("raw");
   tabRef.current = tab;
 
@@ -907,6 +914,60 @@ export default function RecordsPage() {
     setTxRows(data || []);
     setTxLoad(false);
   }
+
+  // Loads the transaction log for the Monthly Summary's current range
+  // (month + week). Filtered per product on the client so expanding
+  // several products doesn't fire several queries.
+  async function loadPivotTx(whichTab, monthValue, week) {
+    const requestId = ++pivotRequestId.current;
+    setPivotLoad(true);
+
+    const { rangeFrom, rangeTo } = getMonthWeekRange(monthValue, week);
+    const fromISO = new Date(`${rangeFrom}T00:00:00`).toISOString();
+    const toISO = new Date(`${rangeTo}T23:59:59.999`).toISOString();
+
+    const data = await fetchAllRows(() =>
+      supabase
+        .from(txLogTable(whichTab))
+        .select("*")
+        .gte("created_at", fromISO)
+        .lte("created_at", toISO)
+        .order("created_at", { ascending: true })
+    );
+
+    if (requestId !== pivotRequestId.current) return; // stale response
+    setPivotRows(data || []);
+    setPivotLoad(false);
+  }
+
+  function togglePivot(id) {
+    const next = new Set(pivotOpen);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+      if (pivotOpen.size === 0) loadPivotTx(tab, summaryMonthValue, summaryWeek);
+    }
+    setPivotOpen(next);
+  }
+
+  // Pivot follows the Monthly Summary's Month / Week filter.
+  // Tab change closes all pivots; month/week change reloads the open ones.
+  useEffect(() => {
+    const tabChanged = prevTabRef.current !== tab;
+    prevTabRef.current = tab;
+
+    if (tabChanged) {
+      pivotRequestId.current++;
+      setPivotOpen(new Set());
+      setPivotRows([]);
+      setPivotLoad(false);
+      return;
+    }
+    if (pivotOpen.size > 0) loadPivotTx(tab, summaryMonthValue, summaryWeek);
+    else setPivotRows([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, summaryMonthValue, summaryWeek]);
 
   // History, tx log, and warehouse map depend on the selected tab + the
   // History/Tx Log date filter (dateFrom/dateTo).
@@ -1153,7 +1214,7 @@ export default function RecordsPage() {
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-gray-100 bg-gray-50">
-                          {["Product", "Beg Bal", "Incoming", "Outgoing", "Current Bal", "Actual Bal", "S/O"].map((h) => (
+                          {["Product", "Beg Bal", "Incoming", "Outgoing", "Current Bal", "Actual Bal", "S/O", "Pivot"].map((h) => (
                             <th key={h} className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">
                               {h}
                             </th>
@@ -1161,17 +1222,119 @@ export default function RecordsPage() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-50">
-                        {summarySlice.map((p) => (
-                          <tr key={p.id} className="hover:bg-gray-50 transition-colors">
-                            <td className="px-4 py-2.5 font-medium text-black">{p.name}</td>
-                            <td className="px-4 py-2.5 text-black">{fmt(p.beg_bal)}</td>
-                            <td className="px-4 py-2.5 text-green-600 font-medium">{fmt(p.incoming)}</td>
-                            <td className="px-4 py-2.5 text-red-500 font-medium">{fmt(p.outgoing)}</td>
-                            <td className="px-4 py-2.5 text-black font-semibold">{fmt(p.current_bal)}</td>
-                            <td className="px-4 py-2.5 text-black">{fmt(p.actual_bal)}</td>
-                            <td className="px-4 py-2.5">{renderLoss(p.loss)}</td>
-                          </tr>
-                        ))}
+                        {summarySlice.map((p) => {
+                          const isOpen = pivotOpen.has(p.id);
+                          const productTx = isOpen
+                            ? pivotRows.filter((r) => (r.product_name ?? "").trim().toLowerCase() === p.id)
+                            : [];
+
+                          return (
+                            <Fragment key={p.id}>
+                              <tr className="hover:bg-gray-50 transition-colors">
+                                <td className="px-4 py-2.5 font-medium text-black">{p.name}</td>
+                                <td className="px-4 py-2.5 text-black">{fmt(p.beg_bal)}</td>
+                                <td className="px-4 py-2.5 text-green-600 font-medium">{fmt(p.incoming)}</td>
+                                <td className="px-4 py-2.5 text-red-500 font-medium">{fmt(p.outgoing)}</td>
+                                <td className="px-4 py-2.5 text-black font-semibold">{fmt(p.current_bal)}</td>
+                                <td className="px-4 py-2.5 text-black">{fmt(p.actual_bal)}</td>
+                                <td className="px-4 py-2.5">{renderLoss(p.loss)}</td>
+                                <td className="px-4 py-2.5">
+                                  <label className="inline-flex items-center gap-1.5 text-xs text-black cursor-pointer select-none">
+                                    <input
+                                      type="checkbox"
+                                      checked={isOpen}
+                                      onChange={() => togglePivot(p.id)}
+                                      className="h-3.5 w-3.5 accent-blue-600"
+                                    />
+                                    Pivot
+                                  </label>
+                                </td>
+                              </tr>
+
+                              {isOpen && (
+                                <tr className="bg-gray-50/60">
+                                  <td colSpan={8} className="px-4 py-3">
+                                    <p className="text-xs text-gray-500 mb-2">
+                                      Transaction history — <span className="font-medium text-black">{p.name}</span> · {summaryMonthLabel}
+                                      {!pivotLoad && ` · ${productTx.length} entr${productTx.length === 1 ? "y" : "ies"}`}
+                                    </p>
+
+                                    {pivotLoad ? (
+                                      <div className="py-4 text-center text-xs text-gray-500 animate-pulse">Loading…</div>
+                                    ) : productTx.length === 0 ? (
+                                      <div className="py-4 text-center text-xs text-gray-500">
+                                        No transactions for this product in this range.
+                                      </div>
+                                    ) : (
+                                      <div className="overflow-x-auto max-h-80 overflow-y-auto border border-gray-200 rounded bg-white">
+                                        <table className="w-full text-xs">
+                                          <thead className="sticky top-0">
+                                            <tr className="border-b border-gray-100 bg-gray-50">
+                                              {[
+                                                "Created At", "Finalized At", "Type", "Source", "Status",
+                                                "In", "Out", "Actual", "S/O",
+                                                "Monitoring", "Representative", "Staff",
+                                                ...(hasSupplierCol(tab) ? ["Supplier"] : []),
+                                                "Warehouse",
+                                              ].map((h) => (
+                                                <th key={h} className="px-3 py-2 text-left font-medium text-gray-500 uppercase tracking-wide whitespace-nowrap">{h}</th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody className="divide-y divide-gray-50">
+                                            {productTx.map((row) => {
+                                              const status = getTxStatus(row);
+                                              const removed = isRemovedStatus(status);
+                                              const isManip = row.transaction_source === "manipulated";
+                                              const isCorr = row.transaction_type === "count_correction";
+                                              const dimClass = removed ? "opacity-50 line-through" : "";
+                                              return (
+                                                <tr key={row.id} className="hover:bg-gray-50 transition-colors">
+                                                  <td className={`px-3 py-2 text-black whitespace-nowrap ${dimClass}`}>{fmtDateTime(row.created_at)}</td>
+                                                  <td className={`px-3 py-2 text-black whitespace-nowrap ${dimClass}`}>{fmtDateTime(row.finalized_at)}</td>
+                                                  <td className="px-3 py-2">
+                                                    <span className={dimClass}>
+                                                      {isCorr ? <Badge color="purple">🔢 Count correction</Badge> : <Badge color="blue">Stock movement</Badge>}
+                                                    </span>
+                                                  </td>
+                                                  <td className="px-3 py-2">
+                                                    <span className={dimClass}>
+                                                      {isManip ? <Badge color="amber">⚙ Manual</Badge> : <Badge color="gray">📋 Ordered</Badge>}
+                                                    </span>
+                                                  </td>
+                                                  <td className="px-3 py-2"><TxStatusBadge row={row} /></td>
+                                                  <td className={`px-3 py-2 text-green-600 font-medium ${dimClass}`}>
+                                                    {Number(row.incoming_bal) > 0 ? fmt(row.incoming_bal) : <span className="text-gray-300">—</span>}
+                                                  </td>
+                                                  <td className={`px-3 py-2 text-red-500 font-medium ${dimClass}`}>
+                                                    {Number(row.outgoing_bal) > 0 ? fmt(row.outgoing_bal) : <span className="text-gray-300">—</span>}
+                                                  </td>
+                                                  <td className={`px-3 py-2 text-black ${dimClass}`}>
+                                                    {row.actual_bal != null ? fmt(row.actual_bal) : <span className="text-gray-300">—</span>}
+                                                  </td>
+                                                  <td className="px-3 py-2">{renderLoss(row.loss, dimClass)}</td>
+                                                  <td className={`px-3 py-2 text-black ${dimClass}`}>{row.monitoring_employee ?? "—"}</td>
+                                                  <td className={`px-3 py-2 text-black ${dimClass}`}>{row.representative_employee ?? "—"}</td>
+                                                  <td className={`px-3 py-2 text-black ${dimClass}`}>{row.staff_employee ?? "—"}</td>
+                                                  {hasSupplierCol(tab) && (
+                                                    <td className={`px-3 py-2 text-black ${dimClass}`}>{row.supplier_name ?? "—"}</td>
+                                                  )}
+                                                  <td className={`px-3 py-2 text-black whitespace-nowrap ${dimClass}`}>
+                                                    {resolveWarehouse(row)}
+                                                  </td>
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
