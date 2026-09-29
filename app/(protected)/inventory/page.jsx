@@ -22,6 +22,8 @@ import InventoryTable from "./components/InventoryTable";
 import ManipulatePanel from "./components/ManipulationPanel";
 import InventoryCalendar from "./components/InventoryCalendar";
 
+import DashboardCards from "@/components/DashboardCards";
+
 // ─── Tab config ───────────────────────────────────────────────────────────
 // Single source of truth for which table each tab reads/writes. Adding a
 // new tab (e.g. "packaging") only requires a new entry here — every other

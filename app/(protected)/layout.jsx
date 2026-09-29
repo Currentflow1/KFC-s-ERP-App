@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { flushQueue, pendingCount, sanitizePendingChanges } from "@/lib/sync";
-import Sidebar from "@/components/Sidebar";
+import Header from "@/components/Header";
 
 export default function ProtectedLayout({ children }) {
   const [pending, setPending] = useState(0);
@@ -60,33 +60,31 @@ export default function ProtectedLayout({ children }) {
   }, []);
 
   return (
-    <div className="flex min-h-screen bg-zinc-900 text-white">
-      <Sidebar />
-      <div className="flex flex-col flex-1 min-w-0">
+    <div className="flex flex-col min-h-scree text-white">
+      <Header />
 
-        {/* Offline banner */}
-        {!online && (
-          <div className="bg-amber-500 text-amber-900 text-xs font-medium px-4 py-2 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-900 inline-block shrink-0" />
-            You are offline. Changes are saved locally and will sync when wifi returns.
-            {pending > 0 && (
-              <span className="ml-auto shrink-0">{pending} pending</span>
-            )}
-          </div>
-        )}
+      {/* Offline banner */}
+      {!online && (
+        <div className="bg-amber-500 text-amber-900 text-xs font-medium px-4 py-2 flex items-center gap-2">
+          <span className="w-1.5 h-1.5 rounded-full bg-amber-900 inline-block shrink-0" />
+          You are offline. Changes are saved locally and will sync when wifi returns.
+          {pending > 0 && (
+            <span className="ml-auto shrink-0">{pending} pending</span>
+          )}
+        </div>
+      )}
 
-        {/* Syncing banner */}
-        {syncing && (
-          <div className="bg-blue-600 text-white text-xs font-medium px-4 py-2 flex items-center gap-2">
-            <span className="animate-pulse w-1.5 h-1.5 rounded-full bg-white inline-block shrink-0" />
-            Syncing {pending} local change{pending !== 1 ? "s" : ""} to server…
-          </div>
-        )}
+      {/* Syncing banner */}
+      {syncing && (
+        <div className="bg-blue-600 text-white text-xs font-medium px-4 py-2 flex items-center gap-2">
+          <span className="animate-pulse w-1.5 h-1.5 rounded-full bg-white inline-block shrink-0" />
+          Syncing {pending} local change{pending !== 1 ? "s" : ""} to server…
+        </div>
+      )}
 
-        <main className="flex-1 p-6 overflow-auto">
-          {children}
-        </main>
-      </div>
+      <main className="flex-1 p-6 overflow-auto">
+        {children}
+      </main>
     </div>
   );
 }
